@@ -16,6 +16,130 @@ use std::uv_global_loop;
 use std::uv_iotask::IoTask;
 use std::bigint;
 
+const CQL_VERSION:u8 = 0x01;
+
+enum cql_opcode {
+    OPCODE_ERROR = 0x00,
+    OPCODE_STARTUP = 0x01,
+    OPCODE_READY = 0x02,
+    OPCODE_AUTHENTICATE = 0x03,
+    OPCODE_CREDENTIALS = 0x04,
+    OPCODE_OPTIONS = 0x05,
+    OPCODE_SUPPORTED = 0x06,
+    OPCODE_QUERY = 0x07,
+    OPCODE_RESULT = 0x08,
+    OPCODE_PREPARE = 0x09,
+    OPCODE_EXECUTE = 0x0A,
+    OPCODE_REGISTER = 0x0B,
+    OPCODE_EVENT = 0x0C,
+    OPCODE_UNKNOWN
+}
+
+fn cql_opcode(val: u8) -> cql_opcode {
+    match val {
+        0x00 => OPCODE_ERROR,
+        0x01 => OPCODE_STARTUP,
+        0x02 => OPCODE_READY,
+        0x03 => OPCODE_AUTHENTICATE,
+        0x04 => OPCODE_CREDENTIALS,
+        0x05 => OPCODE_OPTIONS, 
+        0x06 => OPCODE_SUPPORTED,
+        0x07 => OPCODE_QUERY,
+        0x08 => OPCODE_RESULT,
+        0x09 => OPCODE_PREPARE,
+        0x0A => OPCODE_EXECUTE,
+        0x0B => OPCODE_REGISTER,
+        0x0C => OPCODE_EVENT,
+        _ => OPCODE_UNKNOWN
+    }
+}
+
+enum cql_consistency {
+    CONSISTENCY_ANY = 0x0000,
+    CONSISTENCY_ONE = 0x0001,
+    CONSISTENCY_TWO = 0x0002,
+    CONSISTENCY_THREE = 0x0003,
+    CONSISTENCY_QUORUM = 0x0004,
+    CONSISTENCY_ALL = 0x0005,
+    CONSISTENCY_LOCAL_QUORUM = 0x0006,
+    CONSISTENCY_EACH_QUORUM = 0x0007,
+    CONSISTENCY_UNKNOWN,
+}
+
+fn cql_consistency(val: u16) -> cql_consistency {
+    match val {
+        0 => CONSISTENCY_ANY,
+        1 => CONSISTENCY_ONE,
+        2 => CONSISTENCY_TWO,
+        3 => CONSISTENCY_THREE,
+        4 => CONSISTENCY_QUORUM,
+        5 => CONSISTENCY_ALL,
+        6 => CONSISTENCY_LOCAL_QUORUM,
+        7 => CONSISTENCY_EACH_QUORUM,
+        _ => CONSISTENCY_UNKNOWN
+    }
+}
+
+enum cql_column_type {
+    COLUMN_CUSTOM = 0x0000,
+    COLUMN_ASCII = 0x0001,
+    COLUMN_BIGINT = 0x0002,
+    COLUMN_BLOB = 0x0003,
+    COLUMN_BOOLEAN = 0x0004,
+    COLUMN_COUNTER = 0x0005,
+    COLUMN_DECIMAL = 0x0006,
+    COLUMN_DOUBLE = 0x0007,
+    COLUMN_FLOAT = 0x0008,
+    COLUMN_INT = 0x0009,
+    COLUMN_TEXT = 0x000A,
+    COLUMN_TIMESTAMP = 0x000B,
+    COLUMN_UUID = 0x000C,
+    COLUMN_VARCHAR = 0x000D,
+    COLUMN_VARINT = 0x000E,
+    COLUMN_TIMEUUID = 0x000F,
+    COLUMN_INET = 0x0010,
+    COLUMN_LIST = 0x0020,
+    COLUMN_MAP = 0x0021,
+    COLUMN_SET = 0x0022,
+    COLUMN_UNKNOWN,
+}
+
+fn cql_column_type(val: u16) -> cql_column_type {
+    match val {
+        0x0000 => COLUMN_CUSTOM,
+        0x0001 => COLUMN_ASCII,
+        0x0002 => COLUMN_BIGINT,
+        0x0003 => COLUMN_BLOB,
+        0x0004 => COLUMN_BOOLEAN,
+        0x0005 => COLUMN_COUNTER,
+        0x0006 => COLUMN_DECIMAL,
+        0x0007 => COLUMN_DOUBLE,
+        0x0008 => COLUMN_FLOAT,
+        0x0009 => COLUMN_INT,
+        0x000A => COLUMN_TEXT,
+        0x000B => COLUMN_TIMESTAMP,
+        0x000C => COLUMN_UUID,
+        0x000D => COLUMN_VARCHAR,
+        0x000E => COLUMN_VARINT,
+        0x000F => COLUMN_TIMEUUID,
+        0x0010 => COLUMN_INET,
+        0x0020 => COLUMN_LIST,
+        0x0021 => COLUMN_MAP,
+        0x0022 => COLUMN_SET,
+        _ => COLUMN_UNKNOWN
+    }
+}
+
+struct cql_err {
+    err_name: ~str,
+    err_msg: ~str,
+}
+
+fn cql_err(name: ~str, msg: ~str) -> cql_err {
+    return cql_err{err_name: name, err_msg: msg};
+}
+
+
 trait CqlSerializable {
     fn len(&self) -> uint;
     fn serialize<T: io::Writer>(&self, buf: &T);
@@ -212,82 +336,6 @@ impl CqlSerializable for string_map {
     }
 }
 
-enum cql_consistency {
-    CONSISTENCY_ANY = 0x0000,
-    CONSISTENCY_ONE = 0x0001,
-    CONSISTENCY_TWO = 0x0002,
-    CONSISTENCY_THREE = 0x0003,
-    CONSISTENCY_QUORUM = 0x0004,
-    CONSISTENCY_ALL = 0x0005,
-    CONSISTENCY_LOCAL_QUORUM = 0x0006,
-    CONSISTENCY_EACH_QUORUM = 0x0007,
-    CONSISTENCY_UNKNOWN,
-}
-
-fn cql_consistency(val: u16) -> cql_consistency {
-    match val {
-        0 => CONSISTENCY_ANY,
-        1 => CONSISTENCY_ONE,
-        2 => CONSISTENCY_TWO,
-        3 => CONSISTENCY_THREE,
-        4 => CONSISTENCY_QUORUM,
-        5 => CONSISTENCY_ALL,
-        6 => CONSISTENCY_LOCAL_QUORUM,
-        7 => CONSISTENCY_EACH_QUORUM,
-        _ => CONSISTENCY_UNKNOWN
-    }
-}
-
-enum cql_column_type {
-    COLUMN_CUSTOM = 0x0000,
-    COLUMN_ASCII = 0x0001,
-    COLUMN_BIGINT = 0x0002,
-    COLUMN_BLOB = 0x0003,
-    COLUMN_BOOLEAN = 0x0004,
-    COLUMN_COUNTER = 0x0005,
-    COLUMN_DECIMAL = 0x0006,
-    COLUMN_DOUBLE = 0x0007,
-    COLUMN_FLOAT = 0x0008,
-    COLUMN_INT = 0x0009,
-    COLUMN_TEXT = 0x000A,
-    COLUMN_TIMESTAMP = 0x000B,
-    COLUMN_UUID = 0x000C,
-    COLUMN_VARCHAR = 0x000D,
-    COLUMN_VARINT = 0x000E,
-    COLUMN_TIMEUUID = 0x000F,
-    COLUMN_INET = 0x0010,
-    COLUMN_LIST = 0x0020,
-    COLUMN_MAP = 0x0021,
-    COLUMN_SET = 0x0022,
-    COLUMN_UNKNOWN,
-}
-
-fn cql_column_type(val: u16) -> cql_column_type {
-    match val {
-        0x0000 => COLUMN_CUSTOM,
-        0x0001 => COLUMN_ASCII,
-        0x0002 => COLUMN_BIGINT,
-        0x0003 => COLUMN_BLOB,
-        0x0004 => COLUMN_BOOLEAN,
-        0x0005 => COLUMN_COUNTER,
-        0x0006 => COLUMN_DECIMAL,
-        0x0007 => COLUMN_DOUBLE,
-        0x0008 => COLUMN_FLOAT,
-        0x0009 => COLUMN_INT,
-        0x000A => COLUMN_TEXT,
-        0x000B => COLUMN_TIMESTAMP,
-        0x000C => COLUMN_UUID,
-        0x000D => COLUMN_VARCHAR,
-        0x000E => COLUMN_VARINT,
-        0x000F => COLUMN_TIMEUUID,
-        0x0010 => COLUMN_INET,
-        0x0020 => COLUMN_LIST,
-        0x0021 => COLUMN_MAP,
-        0x0022 => COLUMN_SET,
-        _ => COLUMN_UNKNOWN
-    }
-}
-
 struct cql_row_metadata {
     keyspace: ~str,
     table: ~str,
@@ -339,45 +387,6 @@ enum cql_payload {
     result_schema_change(),
 
     empty(),
-}
-
-
-const CQL_VERSION:u8 = 0x01;
-
-enum cql_opcode {
-    OPCODE_ERROR = 0x00,
-    OPCODE_STARTUP = 0x01,
-    OPCODE_READY = 0x02,
-    OPCODE_AUTHENTICATE = 0x03,
-    OPCODE_CREDENTIALS = 0x04,
-    OPCODE_OPTIONS = 0x05,
-    OPCODE_SUPPORTED = 0x06,
-    OPCODE_QUERY = 0x07,
-    OPCODE_RESULT = 0x08,
-    OPCODE_PREPARE = 0x09,
-    OPCODE_EXECUTE = 0x0A,
-    OPCODE_REGISTER = 0x0B,
-    OPCODE_EVENT = 0x0C,
-    OPCODE_UNKNOWN
-}
-
-fn cql_opcode(val: u8) -> cql_opcode {
-    match val {
-        0x00 => OPCODE_ERROR,
-        0x01 => OPCODE_STARTUP,
-        0x02 => OPCODE_READY,
-        0x03 => OPCODE_AUTHENTICATE,
-        0x04 => OPCODE_CREDENTIALS,
-        0x05 => OPCODE_OPTIONS, 
-        0x06 => OPCODE_SUPPORTED,
-        0x07 => OPCODE_QUERY,
-        0x08 => OPCODE_RESULT,
-        0x09 => OPCODE_PREPARE,
-        0x0A => OPCODE_EXECUTE,
-        0x0B => OPCODE_REGISTER,
-        0x0C => OPCODE_EVENT,
-        _ => OPCODE_UNKNOWN
-    }
 }
 
 struct cql_message {
@@ -460,6 +469,7 @@ fn Query(stream: i8, query_str: ~str, con: cql_consistency) -> cql_message {
 struct cql_loop {
     socket: @net_tcp::TcpSocketBuf,
     mut tasks: [Option<cql_task>*128],
+    port: pipes::Port<cql_message>,
 }
 
 struct cql_task {
@@ -486,13 +496,25 @@ impl cql_loop {
         let q = Query(stream, query_str, con);
 
         q.serialize::<net_tcp::TcpSocketBuf>(self.socket);
+        /*
         let msg = (*self.socket).read_cql_message();
         io::println(fmt!("%?", msg));
+        */
     }
 
-    fn pump_msg(&self) {
+    fn start(&self) {
         loop {
-            let msg = (*self.socket).read_cql_message();
+            /*
+            let one = port.try_recv();
+            match one {
+                Some(msg) => {
+                    io::println(fmt!("%?", msg));
+                }
+                None => {
+                    io::println("Port closed");
+                    break;
+                }
+            }
             let stream = msg.stream;
             match self.tasks[stream] {
                 Some(task) => {
@@ -504,29 +526,21 @@ impl cql_loop {
                     io::println(fmt!("Invalid stream id: %?", stream));
                 }
             }
+            */
         }
     }
 }
 
-struct cql_err {
-    err_name: ~str,
-    err_msg: ~str,
-}
-
-fn cql_err(name: ~str, msg: ~str) -> cql_err {
-    return cql_err{err_name: name, err_msg: msg};
-}
-
-fn get_sock(ip: ~str, port: uint) -> net_tcp::TcpSocket {
+fn get_sock(ip: ~str, port: uint) -> result::Result<net_tcp::TcpSocket, cql_err> {
     let task = @uv_global_loop::get();
     let addr = net_ip::v4::parse_addr(ip);
 
     let res = net_tcp::connect(addr, port, task);
     if(res.is_err()) {
-        io::println("Connection failed");
+        return result::Err(cql_err(~"Error", ~"Failed to connect to server"));
     }
 
-    res.unwrap()
+    result::Ok(res.unwrap())
 }
 
 struct cql_client {
@@ -539,41 +553,91 @@ impl cql_client {
     }
 }
 
+
 fn cql_loop_create(ip: ~str, port: uint) -> result::Result<~cql_loop, cql_err> {
-    let socket = get_sock(ip, port);
-    let buf = @net_tcp::socket_buf(socket);
+    //let (p, c) = pipes::stream::<~cql_message>();
+    let res = get_sock(ip, port);
+    if res.is_err() {
+        return result::Err(res.get_err());
+    }
+    let socket = res.unwrap();
+
+    let sock2 = copy socket;
+    /*
+    let reader = net_tcp::socket_buf(socket);
+    let writer = copy reader;
+
 
     let msg_startup = Startup();
-    msg_startup.serialize::<net_tcp::TcpSocketBuf>(buf);
+    msg_startup.serialize::<net_tcp::TcpSocketBuf>(&writer);
 
+
+    let x = ~reader;
+    do task::spawn {
+        //loop {
+            let y = copy x;
+            let r = copy reader;
+            let msg = (*r).read_cql_message();
+            io::println(fmt!("%?", msg));
+            let s = socket;
+            let msg = s.read_cql_message();
+            io::println(fmt!("%?", msg));
+            cql_send_msg::client::send(port, msg, |m| {
+            });
+        //}
+    }
+    */
+
+/*
+    let client = ~cql_loop {
+        socket: @(*buf), 
+        tasks: [None, ..128],
+        port: port,
+    };
+    */
+
+    //result::Ok(client)
+    result::Err(cql_err(~"", ~""))
+/*
     let response = (*buf).read_cql_message();
     match response.opcode {
         OPCODE_READY => {
-//            let (port, chan) = pipes::stream::<~cql_message>();
-
-            let client = ~cql_loop { socket: buf, tasks: [None, ..128] };
-            /*
+            let (port, chan) = pipes::stream::<cql_message>();
             do task::spawn {
-                client.pump_msg();
+                loop {
+                    let ch = chan;
+                    let msg = (*buf).read_cql_message();
+                    ch.send(msg);
+                }
+            }
+
+            let client = ~cql_loop {
+                socket: buf, 
+                tasks: [None, ..128],
+                port: port,
             };
-            */
 
             result::Ok(client)
         },
         _ => result::Err(cql_err(fmt!("Invalid opcode: %?", response.opcode), ~""))
     }
+    */
+
 }
 
 fn main() {
     let res = ~cql_loop_create(~"127.0.0.1", 9042);
     if res.is_err() {
+        io::println(fmt!("%?", res.get_err()));
         return;
     }
 
+    /*
     let client = res.get_ref();
     //client.query(~"use test");
     client.query(~"select id, email from test.test", 
             CONSISTENCY_ONE, |res| {
         io::println(fmt!("%?", res));
     });
+    */
 }
