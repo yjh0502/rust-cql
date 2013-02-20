@@ -6,6 +6,8 @@ use core::vec;
 use core::io;
 use core::io::ReaderUtil;
 use core::io::WriterUtil;
+use core::task;
+use core::pipes;
 
 use std::net_ip;
 use std::net_tcp;
@@ -445,25 +447,64 @@ fn Startup() -> cql_message {
     };
 }
 
-fn Query(query_str: ~str, con: cql_consistency) -> cql_message {
+fn Query(stream: i8, query_str: ~str, con: cql_consistency) -> cql_message {
     return cql_message {
         version: CQL_VERSION,
         flags: 0x00,
-        stream: 0x01,
+        stream: stream,
         opcode: OPCODE_QUERY,
         payload: query(query_str, con),
     };
 }
 
-struct cql_client {
+struct cql_loop {
     socket: @net_tcp::TcpSocketBuf,
+    mut tasks: [Option<cql_task>*128],
 }
 
-impl cql_client {
-    fn query(&self, query_str: ~str) -> cql_message {
-        Query(query_str, CONSISTENCY_ONE).serialize::<net_tcp::TcpSocketBuf>(self.socket);
+struct cql_task {
+    cb: @fn(cql_message),
+}
 
-        (*self.socket).read_cql_message()
+impl cql_loop {
+    fn get_empty_stream(&self, cb: @fn(cql_message)) -> i8 {
+        for i8::range(0, 128) |i| {
+            match self.tasks[i] {
+                None => { 
+                    self.tasks[i] = Some(cql_task{cb: cb});
+                    return i; 
+                },
+                _ => ()
+            }
+        }
+        return -1;
+    }
+
+    fn query(&self, query_str: ~str, con: cql_consistency, 
+            f: @fn(cql_message)) {
+        let stream = self.get_empty_stream(f);
+        let q = Query(stream, query_str, con);
+
+        q.serialize::<net_tcp::TcpSocketBuf>(self.socket);
+        let msg = (*self.socket).read_cql_message();
+        io::println(fmt!("%?", msg));
+    }
+
+    fn pump_msg(&self) {
+        loop {
+            let msg = (*self.socket).read_cql_message();
+            let stream = msg.stream;
+            match self.tasks[stream] {
+                Some(task) => {
+                    self.tasks[stream] = None;
+                    let cb = task.cb;
+                    cb(msg);
+                }
+                _ => {
+                    io::println(fmt!("Invalid stream id: %?", stream));
+                }
+            }
+        }
     }
 }
 
@@ -488,7 +529,17 @@ fn get_sock(ip: ~str, port: uint) -> net_tcp::TcpSocket {
     res.unwrap()
 }
 
-fn cql_client_create(ip: ~str, port: uint) -> result::Result<cql_client, cql_err> {
+struct cql_client {
+    chan: pipes::Chan<(~cql_message, ~fn(cql_message))>,
+}
+
+impl cql_client {
+    fn send_msg(&self, msg: ~cql_message,  cb: ~fn(cql_message)) {
+        self.chan.send((msg, cb));
+    }
+}
+
+fn cql_loop_create(ip: ~str, port: uint) -> result::Result<~cql_loop, cql_err> {
     let socket = get_sock(ip, port);
     let buf = @net_tcp::socket_buf(socket);
 
@@ -497,19 +548,32 @@ fn cql_client_create(ip: ~str, port: uint) -> result::Result<cql_client, cql_err
 
     let response = (*buf).read_cql_message();
     match response.opcode {
-        OPCODE_READY => result::Ok(cql_client { socket: buf }),
+        OPCODE_READY => {
+//            let (port, chan) = pipes::stream::<~cql_message>();
+
+            let client = ~cql_loop { socket: buf, tasks: [None, ..128] };
+            /*
+            do task::spawn {
+                client.pump_msg();
+            };
+            */
+
+            result::Ok(client)
+        },
         _ => result::Err(cql_err(fmt!("Invalid opcode: %?", response.opcode), ~""))
     }
 }
 
 fn main() {
-    let res = ~cql_client_create(~"127.0.0.1", 9042);
+    let res = ~cql_loop_create(~"127.0.0.1", 9042);
     if res.is_err() {
         return;
     }
 
     let client = res.get_ref();
     //client.query(~"use test");
-    let response = client.query(~"select id, email from test.test");
-    io::println(fmt!("%?", response));
+    client.query(~"select id, email from test.test", 
+            CONSISTENCY_ONE, |res| {
+        io::println(fmt!("%?", res));
+    });
 }
