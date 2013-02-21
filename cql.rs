@@ -11,19 +11,21 @@ fn main() {
 
     let client = res.get();
 
-    let res = client.query(~"create keyspace test with replication = {'CLASS': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
-    io::println(fmt!("%?", res));
-    let res = client.query(~"create table test.test (id text primary key, pw text)", cql_client::ConsistencyOne);
-    io::println(fmt!("%?", res));
+    client.query(~"create keyspace test with replication = \
+        {'CLASS': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
+    client.query(~"create table test.test (id text primary key, pw text)",
+         cql_client::ConsistencyOne);
+    client.query(~"insert into test.test (id, pw) values ('adsf', 'asdf')",
+         cql_client::ConsistencyOne);
+    let res = client.query(~"select * from test.test", 
+        cql_client::ConsistencyOne);
 
-    let res = client.query(~"select * from test.test", cql_client::ConsistencyOne);
-    let msg = match copy res.body {
-        cql_client::ResponseEmpty() => ~"empty",
-        cql_client::ResultRows(rows) => ~"rows",
-        _ => ~"etc",
+    match res.body {
+        cql_client::ResultRows(ref rows) => {
+            for rows.rows.each |row| {
+                io::println(fmt!("%?", row.get_column(~"id")));
+            }
+        },
+        _ => (),
     };
-
-    io::println(fmt!("%?", msg));
-
-    io::println(fmt!("%?", res));
 }

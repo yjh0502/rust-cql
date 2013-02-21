@@ -22,6 +22,8 @@ pub use cql_client::{ResponseError,
     ResultVoid, ResultRows, ResultKeyspace, ResultPrepared, 
     ResultSchemaChange, ResponseEmpty};
 
+pub use cql_client::{CqlRow, CqlRows};
+
 //pub use cql_client::{ColumnCustom, ColumnASCII, ColumnBIGINT, ColumnBlob, ColumnBoolean, ColumnCounter, ColumnDecimal, ColumnDOUBLE, ColumnFLOAT, ColumnINT, ColumnTEXT, ColumnTimestamp, ColumnUUID, ColumnVARCHAR, ColumnVarint, ColumnTimeUUID, ColumnInet, ColumnList, ColumnMap, ColumnSet, ColumnUnknown};
 
 //pub use cql_client::Opcode;

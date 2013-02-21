@@ -214,12 +214,12 @@ impl<T: ReaderUtil> CqlReader for T {
     }
 
     fn read_cql_rows(&self) -> CqlRows {
-        let metadata = self.read_cql_metadata();
+        let metadata = @self.read_cql_metadata();
         let rows_count = self.read_be_u32();
 
         let mut rows:~[CqlRow] = ~[];
         for u32::range(0, rows_count) |_| {
-            let mut row = CqlRow{ cols: ~[] };
+            let mut row = CqlRow{ cols: ~[], metadata: metadata };
             for metadata.row_metadata.each |meta| {
                 let col = match meta.col_type {
                     ColumnASCII => CqlString(self.read_cql_long_str()),
@@ -258,7 +258,6 @@ impl<T: ReaderUtil> CqlReader for T {
 
         CqlRows {
             metadata: metadata,
-            rows_count: rows_count,
             rows: rows,
         }
     }
@@ -407,11 +406,25 @@ pub enum CqlColumn {
 
 pub struct CqlRow {
     cols: ~[CqlColumn],
+    metadata: @CqlMetadata,
 }
 
-struct CqlRows {
-    metadata: CqlMetadata,
-    rows_count: u32,
+impl CqlRow {
+    fn get_column(&self, col_name: ~str) -> Option<CqlColumn> {
+        let mut i = 0;
+        let len = self.metadata.row_metadata.len();
+        while i < len {
+            if self.metadata.row_metadata[i].col_name == col_name {
+                return Some(copy self.cols[i]);
+            }
+            i += 1;
+        }
+        None
+    }
+}
+
+pub struct CqlRows {
+    metadata: @CqlMetadata,
     rows: ~[CqlRow],
 }
 
@@ -419,8 +432,7 @@ pub enum CqlRequestBody {
     RequestStartup(CqlStringMap),
     RequestCred(~[~str]),
     RequestQuery(~str, Consistency),
-
-    RequestEmpty,
+    RequestOptions,
 }
 
 pub enum CqlResponseBody {
@@ -518,10 +530,9 @@ fn Options() -> CqlRequest {
         flags: 0x00,
         stream: 0x01,
         opcode: OpcodeOptions,
-        body: RequestEmpty,
+        body: RequestOptions,
     };
 }
-
 
 fn Query(stream: i8, query_str: ~str, con: Consistency) -> CqlRequest {
     return CqlRequest {
