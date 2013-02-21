@@ -552,7 +552,10 @@ impl CqlClient {
     fn query(&self, query_str: ~str, con: Consistency) -> CqlResponse {
         let q = Query(0x01, query_str, con);
 
-        q.serialize::<net_tcp::TcpSocketBuf>(&self.socket);
+        let writer = io::BytesWriter();
+        
+        q.serialize::<io::BytesWriter>(&writer);
+        self.socket.write(writer.bytes.data);
         self.socket.read_cql_response()
     }
 }
