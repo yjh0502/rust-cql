@@ -2,6 +2,7 @@ extern mod std;
 extern mod cql_client;
 
 use std::time;
+use std::task;
 
 const str_seq:&static/str = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM";
 const str_seq_len:uint = 26 * 2;
@@ -20,13 +21,30 @@ fn time_diff(start: time::Timespec, end: time::Timespec) -> float {
 }
 
 fn main() {
-    let res = cql_client::connect(~"127.0.0.1", 9042, None);
-    if res.is_err() {
-        io::println(fmt!("%?", res.get_err()));
-        return;
-    }
+    for uint::range(0, 8) |_| {
+        do task::spawn {
+            let res = cql_client::connect(~"127.0.0.1", 9042, None);
+            if res.is_err() {
+                io::println(fmt!("%?", res.get_err()));
+                fail!(~"Failed to connect");
+            }
 
-    let client = res.get();
+            let client = res.get();
+            let start = time::get_time();
+            let queries = 10000;
+
+            for uint::range(0, queries) |_| {
+                let id = rand_str(10);
+                let pw = rand_str(10);
+                let res = client.query(fmt!("insert into test.test (id, pw) values ('%?', '%?')", id, pw),
+                     cql_client::ConsistencyOne);
+            }
+
+            let end = time::get_time();
+            io::println(fmt!("qps: %?",  (queries as float) / time_diff(start, end)));
+        }
+    }
+}
 
 /*
     client.query(~"create keyspace test with replication = \
@@ -46,16 +64,4 @@ fn main() {
     };
     */
 
-    let start = time::get_time();
-    let queries = 10000;
 
-    for uint::range(0, queries) |_| {
-        let id = rand_str(10);
-        let pw = rand_str(10);
-        client.query(fmt!("insert into test.test (id, pw) values (%?, %?)", id, pw),
-             cql_client::ConsistencyOne);
-    }
-
-    let end = time::get_time();
-    io::println(fmt!("qps: %?",  (queries as float) / time_diff(start, end)));
-}

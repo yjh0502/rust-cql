@@ -263,11 +263,16 @@ impl<T: ReaderUtil> CqlReader for T {
     }
 
     fn read_cql_response(&self) -> CqlResponse {
-        let version = self.read_u8();
-        let flags = self.read_u8();
-        let stream = self.read_i8();
-        let opcode = OpcodeResponse(self.read_u8());
-        let length = self.read_be_u32() as uint;
+        let header_data = self.read_bytes(8);
+
+        let version = header_data[0];
+        let flags = header_data[1];
+        let stream = header_data[2] as i8;
+        let opcode = OpcodeResponse(header_data[3]);
+        let length = (header_data[4] as uint << 24) + 
+            (header_data[5] as uint << 16) + 
+            (header_data[6] as uint << 8) + 
+            (header_data[7] as uint);
 
         let body_data = self.read_bytes(length);
         let reader = io_util::BufReader::new(body_data);
