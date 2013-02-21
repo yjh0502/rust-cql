@@ -13,8 +13,10 @@ fn main() {
 
     let res = client.query(~"create keyspace test with replication = {'CLASS': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
+    let res = client.query(~"create table test.test (id text primary key, pw text)", cql_client::ConsistencyOne);
+    io::println(fmt!("%?", res));
 
-    let res = client.query(~"select id, email from test.test", cql_client::ConsistencyOne);
+    let res = client.query(~"select * from test.test", cql_client::ConsistencyOne);
     let msg = match copy res.body {
         cql_client::ResponseEmpty() => ~"empty",
         cql_client::ResultRows(rows) => ~"rows",
