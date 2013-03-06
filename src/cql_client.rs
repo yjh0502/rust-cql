@@ -83,18 +83,18 @@ pub fn Consistency(val: u16) -> Consistency {
 pub enum CqlColumnType {
     ColumnCustom = 0x0000,
     ColumnASCII = 0x0001,
-    ColumnBIGINT = 0x0002,
+    ColumnBigInt = 0x0002,
     ColumnBlob = 0x0003,
     ColumnBoolean = 0x0004,
     ColumnCounter = 0x0005,
     ColumnDecimal = 0x0006,
-    ColumnDOUBLE = 0x0007,
-    ColumnFLOAT = 0x0008,
-    ColumnINT = 0x0009,
-    ColumnTEXT = 0x000A,
+    ColumnDouble = 0x0007,
+    ColumnFloat = 0x0008,
+    ColumnInt = 0x0009,
+    ColumnText = 0x000A,
     ColumnTimestamp = 0x000B,
     ColumnUUID = 0x000C,
-    ColumnVARCHAR = 0x000D,
+    ColumnVarChar = 0x000D,
     ColumnVarint = 0x000E,
     ColumnTimeUUID = 0x000F,
     ColumnInet = 0x0010,
@@ -108,18 +108,18 @@ fn CqlColumnType(val: u16) -> CqlColumnType {
     match val {
         0x0000 => ColumnCustom,
         0x0001 => ColumnASCII,
-        0x0002 => ColumnBIGINT,
+        0x0002 => ColumnBigInt,
         0x0003 => ColumnBlob,
         0x0004 => ColumnBoolean,
         0x0005 => ColumnCounter,
         0x0006 => ColumnDecimal,
-        0x0007 => ColumnDOUBLE,
-        0x0008 => ColumnFLOAT,
-        0x0009 => ColumnINT,
-        0x000A => ColumnTEXT,
+        0x0007 => ColumnDouble,
+        0x0008 => ColumnFloat,
+        0x0009 => ColumnInt,
+        0x000A => ColumnText,
         0x000B => ColumnTimestamp,
         0x000C => ColumnUUID,
-        0x000D => ColumnVARCHAR,
+        0x000D => ColumnVarChar,
         0x000E => ColumnVarint,
         0x000F => ColumnTimeUUID,
         0x0010 => ColumnInet,
@@ -223,13 +223,19 @@ impl<T: ReaderUtil> CqlReader for T {
             for metadata.row_metadata.each |meta| {
                 let col = match meta.col_type {
                     ColumnASCII => CqlString(self.read_cql_long_str()),
-                    ColumnVARCHAR => CqlString(self.read_cql_long_str()),
-                    ColumnTEXT => CqlString(self.read_cql_long_str()),
+                    ColumnVarChar => CqlString(self.read_cql_long_str()),
+                    ColumnText => CqlString(self.read_cql_long_str()),
 
-                    ColumnINT => Cqli32(self.read_be_i32()),
-                    ColumnBIGINT => Cqli64(self.read_be_i64()),
-                    ColumnFLOAT => Cqlf32(self.read_be_u32() as f32),
-                    ColumnDOUBLE => Cqlf64(self.read_be_u64() as f64),
+                    ColumnInt => Cqli32(self.read_be_i32()),
+                    ColumnBigInt => Cqli64(self.read_be_i64()),
+                    ColumnFloat => Cqlf32(unsafe{
+                        assert 4 == self.read_be_u32();
+                        cast::transmute(self.read_be_u32())
+                    }),
+                    ColumnDouble => Cqlf64(unsafe{
+                        assert 8 == self.read_be_u32();
+                        cast::transmute(self.read_be_u64())
+                    }),
 
    /*
                     ColumnCustom => ,
