@@ -146,7 +146,7 @@ trait CqlSerializable {
 
 trait CqlReader {
     fn read_cql_str(&self) -> ~str;
-    fn read_cql_long_str(&self) -> ~str;
+    fn read_cql_long_str(&self) -> Option<~str>;
     fn read_cql_rows(&self) -> CqlRows;
 
     fn read_cql_metadata(&self) -> CqlMetadata;
@@ -159,9 +159,13 @@ impl<T: ReaderUtil> CqlReader for T {
         str::from_bytes(self.read_bytes(len))
     }
 
-    fn read_cql_long_str(&self) -> ~str {
-        let len = self.read_be_u32() as uint;
-        str::from_bytes(self.read_bytes(len))
+    fn read_cql_long_str(&self) -> Option<~str> {
+        let len = self.read_be_i32() as uint;
+        if(len == -1) {
+            None
+        } else {
+            Some(str::from_bytes(self.read_bytes(len)))
+        }
     }
 
     fn read_cql_metadata(&self) -> CqlMetadata {
@@ -190,9 +194,9 @@ impl<T: ReaderUtil> CqlReader for T {
             let type_key = self.read_be_u16();
             let type_name = 
                 if type_key >= 0x20 {
-                    self.read_cql_str()
+                    CqlColumnType(self.read_be_u16())
                 } else {
-                    ~""
+                    ColumnUnknown
                 };
 
             row_metadata.push(CqlColMetadata {
@@ -217,6 +221,8 @@ impl<T: ReaderUtil> CqlReader for T {
         let metadata = @self.read_cql_metadata();
         let rows_count = self.read_be_u32();
 
+        io::println(fmt!("%?", metadata));
+
         let mut rows:~[CqlRow] = ~[];
         for u32::range(0, rows_count) |_| {
             let mut row = CqlRow{ cols: ~[], metadata: metadata };
@@ -226,16 +232,40 @@ impl<T: ReaderUtil> CqlReader for T {
                     ColumnVarChar => CqlString(self.read_cql_long_str()),
                     ColumnText => CqlString(self.read_cql_long_str()),
 
-                    ColumnInt => Cqli32(self.read_be_i32()),
-                    ColumnBigInt => Cqli64(self.read_be_i64()),
+                    ColumnInt => Cqli32({
+                        match self.read_be_i32() {
+                            -1 => None,
+                            4 => Some(self.read_be_i32()),
+                            len => fail!(fmt!("Invalid length with i32: %?", len)),
+                        }
+                    }),
+                    ColumnBigInt => Cqli64(Some(self.read_be_i64())),
                     ColumnFloat => Cqlf32(unsafe{
-                        assert 4 == self.read_be_u32();
-                        cast::transmute(self.read_be_u32())
+                        match self.read_be_i32() {
+                            -1 => None,
+                            4 => Some(cast::transmute(self.read_be_u32())),
+                            len => fail!(fmt!("Invalid length with f32: %?", len)),
+                        }
                     }),
                     ColumnDouble => Cqlf64(unsafe{
-                        assert 8 == self.read_be_u32();
-                        cast::transmute(self.read_be_u64())
+                        match self.read_be_i32() {
+                            -1 => None,
+                            4 => Some(cast::transmute(self.read_be_u64())),
+                            len => fail!(fmt!("Invalid length with f64: %?", len)),
+                        }
                     }),
+
+                    ColumnList => CqlList({
+                        match self.read_be_i32() {
+                            -1 => None,
+                            len => {
+                                let data = self.read_bytes(len as uint);
+                                io::println(fmt!("%?", data));
+                                None
+                            },
+                        }
+                    }),
+
 
    /*
                     ColumnCustom => ,
@@ -252,8 +282,13 @@ impl<T: ReaderUtil> CqlReader for T {
                     ColumnMap => ,
                     ColumnSet => ,
                     */
-                    _ => {
-                        fail!(~"Not implemented column type"); 
+                    unknown => {
+                        io::println(fmt!("Unknown type id: %?", unknown));
+                        match self.read_be_i32() {
+                            -1 => (),
+                            len => { self.read_bytes(len as uint); },
+                        }
+                        CqlUnknown
                     }
                 };
 
@@ -281,6 +316,7 @@ impl<T: ReaderUtil> CqlReader for T {
             (header_data[7] as uint);
 
         let body_data = self.read_bytes(length);
+        io::println(fmt!("%?", body_data));
         let reader = io_util::BufReader::new(body_data);
 
         let body = match opcode {
@@ -386,7 +422,7 @@ struct CqlColMetadata {
     table: ~str,
     col_name: ~str,
     col_type: CqlColumnType,
-    col_type_name: ~str,
+    col_type_name: CqlColumnType,
 }
 
 struct CqlMetadata {
@@ -398,21 +434,25 @@ struct CqlMetadata {
 }
 
 pub enum CqlColumn {
-    CqlString(~str),
+    CqlString(Option<~str>),
 
-    Cqli32(i32),
-    Cqli64(i64),
+    Cqli32(Option<i32>),
+    Cqli64(Option<i64>),
 
-    CqlBlob(~[u8]),
-    CqlBool(bool),
+    CqlBlob(Option<~[u8]>),
+    CqlBool(Option<bool>),
 
-    CqlCounter(u64),
+    CqlCounter(Option<u64>),
 
-    Cqlf32(f32),
-    Cqlf64(f64),
+    Cqlf32(Option<f32>),
+    Cqlf64(Option<f64>),
 
     CqlTimestamp(u64),
     CqlBigint(bigint::BigInt),
+
+    CqlList(Option<~[CqlColumn]>),
+
+    CqlUnknown,
 }
 
 pub struct CqlRow {

@@ -9,8 +9,7 @@ const str_seq_len:uint = 26 * 2;
 
 fn rand_str(size: uint) -> ~str {
     let mut bytes:~[u8] = ~[];
-
-    for uint::range(0, size) |i| {
+for uint::range(0, size) |i| {
         bytes.push(str_seq[rand::random() % str_seq_len]);
     }
     str::from_bytes(bytes)
@@ -31,6 +30,7 @@ fn main() {
 
     let mut res;
 
+/*
     res = client.query(~"create keyspace test with replication = \
         {'CLASS': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
 
@@ -39,8 +39,9 @@ fn main() {
 
     res = client.query(~"insert into test.test2(id, pw) values ('asdf', 1.2345)",
          cql_client::ConsistencyOne);
+    */
 
-    res = client.query(~"select * from test.test2",
+    res = client.query(~"select * from test.test3",
          cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
 
