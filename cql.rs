@@ -20,8 +20,6 @@ fn time_diff(start: time::Timespec, end: time::Timespec) -> float {
 }
 
 fn main() {
-
-/*
     let res = cql_client::connect(~"127.0.0.1", 9042, None);
     if res.is_err() {
         io::println(fmt!("%?", res.get_err()));
@@ -31,20 +29,19 @@ fn main() {
     let client = res.get();
 
     let mut res;
-
     res = client.query(~"create keyspace test with replication = \
-        {'CLASS': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
+        {'class': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
+    io::println(fmt!("%?", res));
 
     res = client.query(~"create table test.test2 (id text primary key, value float)",
          cql_client::ConsistencyOne);
+    io::println(fmt!("%?", res));
 
-    res = client.query(~"insert into test.test2(id, pw) values ('asdf', 1.2345)",
-         cql_client::ConsistencyOne);
-
-    res = client.query(~"select * from test.test3",
+    res = client.query(~"insert into test.test2 (id, value) values ('asdf', 1.2345)",
          cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
-    */
 
-
+    res = client.query(~"select * from test.test2",
+         cql_client::ConsistencyOne);
+    io::println(fmt!("%?", res));
 }

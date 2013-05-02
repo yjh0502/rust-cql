@@ -226,8 +226,6 @@ impl<T: ReaderUtil> CqlReader for T {
         let metadata = @self.read_cql_metadata();
         let rows_count = self.read_be_u32();
 
-        io::println(fmt!("%?", metadata));
-
         let mut rows:~[CqlRow] = ~[];
         for u32::range(0, rows_count) |_| {
             let mut row = CqlRow{ cols: ~[], metadata: metadata };
@@ -266,7 +264,7 @@ impl<T: ReaderUtil> CqlReader for T {
                             len => {
                                 let data = self.read_bytes(len as uint);
                                 io::println(fmt!("%?", data));
-                                None
+                                fail!(fmt!("List parse not implemented"));
                             },
                         }
                     }),
@@ -321,7 +319,6 @@ impl<T: ReaderUtil> CqlReader for T {
             (header_data[7] as uint);
 
         let body_data = self.read_bytes(length);
-        io::println(fmt!("%?", body_data));
         let reader = io_util::BufReader::new(body_data);
 
         let body = match opcode {
@@ -605,7 +602,7 @@ pub struct CqlClient {
 }
 
 impl CqlClient {
-    fn query(&self, query_str: ~str, con: Consistency) -> CqlResponse {
+    pub fn query(&self, query_str: ~str, con: Consistency) -> CqlResponse {
         let q = Query(0x01, query_str, con);
 
         let writer = io::BytesWriter();
