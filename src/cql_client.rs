@@ -1,12 +1,17 @@
-use core::{result, str, vec, io};
+#[link(name="cql_client", 
+    vers="0.0.1")];
+
+#[crate_type="lib"];
+#[warn(non_camel_case_types)];
+
+extern mod std;
+
 use core::io::{ReaderUtil, WriterUtil};
 
 use std::{net_ip, net_tcp, uv_global_loop, bigint};
-use std::net_tcp::TcpSocketBuf;
-use std::uv_iotask::IoTask;
 use std::io_util;
 
-pub const CQL_VERSION:u8 = 0x01;
+pub static CQL_VERSION:u8 = 0x01;
 
 enum OpcodeRequest {
     //requests
@@ -606,7 +611,7 @@ impl CqlClient {
         let writer = io::BytesWriter();
         
         q.serialize::<io::BytesWriter>(&writer);
-        self.socket.write(writer.bytes.data);
+        self.socket.write(writer.bytes);
         self.socket.read_cql_response()
     }
 }
@@ -633,7 +638,7 @@ pub fn connect(ip: ~str, port: uint, creds:Option<~[~str]>) ->
         ResponseReady => {
             result::Ok(CqlClient { socket: buf })
         },
-        ResponseAuth(ref msg) => {
+        ResponseAuth(_) => {
             match(creds) {
                 Some(cred) => {
                     let msg_auth = Auth(cred);
@@ -641,7 +646,7 @@ pub fn connect(ip: ~str, port: uint, creds:Option<~[~str]>) ->
                     let response = buf.read_cql_response();
                     match response.body {
                         ResponseReady => result::Ok(CqlClient { socket: buf }),
-                        ResponseError(ref code, ref msg) => {
+                        ResponseError(_, ref msg) => {
                             result::Err(CqlError(~"Error", copy *msg))
                         }
                         _ => {

@@ -1,7 +1,7 @@
-lib: src/cql_client.rc src/cql_client.rs
-	rustc -O $< --out-dir=./
+lib: src/cql_client.rs
+	rustc --lib -O $< --out-dir=./
 
-cql: cql.rs lib
+cql: cql.rs
 	rustc -O -L./ $< -o cql
 
 all: cql
