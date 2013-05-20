@@ -365,7 +365,7 @@ impl<T: ReaderUtil> CqlReader for T {
             },//ResponseEmpty,
         };
 
-        if reader.pos != length {
+        if *reader.pos != length {
             debug!("Data is not fully readed: specification might be changed %? != %?", 
                 reader.pos, length);
         }
@@ -608,7 +608,7 @@ impl CqlClient {
         let writer = io::BytesWriter();
         
         q.serialize::<io::BytesWriter>(&writer);
-        self.socket.write(writer.bytes);
+        self.socket.write(*writer.bytes);
         self.socket.read_cql_response()
     }
 }

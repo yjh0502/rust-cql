@@ -29,19 +29,19 @@ fn main() {
     let client = res.get();
 
     let mut res;
-    res = client.query(~"create keyspace test with replication = \
+    res = client.query(~"create keyspace rust with replication = \
         {'class': 'SimpleStrategy', 'replication_factor':1}", cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
 
-    res = client.query(~"create table test.test2 (id text primary key, value float)",
+    res = client.query(~"create table rust.test (id text primary key, value float)",
          cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
 
-    res = client.query(~"insert into test.test2 (id, value) values ('asdf', 1.2345)",
+    res = client.query(~"insert into rust.test (id, value) values ('asdf', 1.2345)",
          cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
 
-    res = client.query(~"select * from test.test2",
+    res = client.query(~"select * from rust.test",
          cql_client::ConsistencyOne);
     io::println(fmt!("%?", res));
 }
