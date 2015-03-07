@@ -1,3 +1,4 @@
 *.so
 *.sw[a-z]
-cql
+target
+Cargo.lock

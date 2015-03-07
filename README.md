@@ -1,7 +1,7 @@
 rust-cql
 ========
 
-Cassandra Query Language version 3(cql3) native protocol implementation with rust-lang
+Cassandra Query Language version 3(cql3) v1 native protocol implementation with rust-lang
 
 This is an implementation of cql3 native protocol [1]. Native protocol is disabled in current distribution. Please enable the native protocol before start. [2] 
 
