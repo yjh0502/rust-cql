@@ -640,7 +640,10 @@ impl Client {
 pub fn connect(addr: &str) -> CqlResult<Client> {
     let mut socket = try!(tcp::TcpStream::connect(addr));
     let msg_startup = startup();
-    try!(msg_startup.serialize::<tcp::TcpStream>(&mut socket));
+
+    let mut buf = Vec::new();
+    try!(msg_startup.serialize::<Vec<u8>>(&mut buf));
+    try!(socket.write_all(buf.as_slice()));
 
     let response = try!(socket.read_cql_response());
     match response.body {
