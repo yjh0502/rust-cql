@@ -4,15 +4,13 @@
 extern crate num;
 
 use std::old_io;
+use std::old_io::{IoResult,IoError,BufferedReader};
 use std::rc::Rc;
+use std::error::FromError;
 use std::borrow::ToOwned;
 use std::old_io::net::tcp;
 use std::intrinsics::transmute;
-
-//use core::old_io::{ReaderUtil, WriterUtil};
-
-//use std::{net_ip, net_tcp, uv_global_loop, Bigint};
-//use std::old_io_util;
+use std::string::FromUtf8Error;
 
 pub static CQL_VERSION:u8 = 0x01;
 
@@ -138,50 +136,70 @@ fn column_type(val: u16) -> ColumnType {
 }
 
 #[derive(Debug)]
-pub struct Error {
-    name: String,
-    msg: String,
+pub enum CqlError {
+    IoError(IoError),
+    FromUtf8Error(FromUtf8Error),
 }
+
+impl FromError<IoError> for CqlError {
+    fn from_error(err: IoError) -> CqlError {
+        CqlError::IoError(err)
+    }
+}
+
+impl FromError<FromUtf8Error> for CqlError {
+    fn from_error(err: FromUtf8Error) -> CqlError {
+        CqlError::FromUtf8Error(err)
+    }
+}
+
+pub type CqlResult<T> = Result<T, CqlError>;
 
 trait CqlSerializable {
     fn len(&self) -> usize;
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T);
+    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()>;
 }
 
 trait CqlReader {
-    fn read_bytes(&mut self, len: usize) -> Vec<u8>;
-    fn read_cql_str(&mut self) -> String;
-    fn read_cql_long_str(&mut self) -> Option<String>;
-    fn read_cql_rows(&mut self) -> Rows;
+    fn read_bytes(&mut self, len: usize) -> IoResult<Vec<u8>>;
+    fn read_cql_str(&mut self) -> CqlResult<String>;
+    fn read_cql_long_str(&mut self) -> CqlResult<Option<String>>;
+    fn read_cql_rows(&mut self) -> CqlResult<Rows>;
 
-    fn read_cql_metadata(&mut self) -> Metadata;
-    fn read_cql_response(&mut self) -> Response;
+    fn read_cql_metadata(&mut self) -> CqlResult<Metadata>;
+    fn read_cql_response(&mut self) -> CqlResult<Response>;
 }
 
 impl<'a, T: old_io::Reader> CqlReader for T {
-    fn read_bytes(&mut self, len: usize) -> Vec<u8> {
-        self.read_exact(len).unwrap()
+    fn read_bytes(&mut self, len: usize) -> IoResult<Vec<u8>> {
+        self.read_exact(len)
     }
 
-    fn read_cql_str(&mut self) -> String {
-        let len = self.read_be_u16().unwrap() as usize;
-        String::from_utf8(self.read_bytes(len)).unwrap()
+    fn read_cql_str(&mut self) -> CqlResult<String> {
+        let len = try!(self.read_be_u16());
+        let bytes = try!(self.read_bytes(len as usize));
+        let s = try!(String::from_utf8(bytes));
+        Ok(s)
     }
 
-    fn read_cql_long_str(&mut self) -> Option<String> {
-        match self.read_be_i32().unwrap() {
-            -1 => None,
-            len => Some(String::from_utf8(self.read_bytes(len as usize)).unwrap())
+    fn read_cql_long_str(&mut self) -> CqlResult<Option<String>> {
+        match try!(self.read_be_i32()) {
+            -1 => Ok(None),
+            len => {
+                let bytes = try!(self.read_bytes(len as usize));
+                let s = try!(String::from_utf8(bytes));
+                Ok(Some(s))
+            }
         }
     }
 
-    fn read_cql_metadata(&mut self) -> Metadata {
-        let flags = self.read_be_u32().unwrap();
-        let column_count = self.read_be_u32().unwrap();
+    fn read_cql_metadata(&mut self) -> CqlResult<Metadata> {
+        let flags = try!(self.read_be_u32());
+        let column_count = try!(self.read_be_u32());
         let (keyspace, table) =
             if flags == 0x0001 {
-                let keyspace_str = self.read_cql_str();
-                let table_str = self.read_cql_str();
+                let keyspace_str = try!(self.read_cql_str());
+                let table_str = try!(self.read_cql_str());
                 (Some(keyspace_str), Some(table_str))
             } else {
                 (None, None)
@@ -193,15 +211,15 @@ impl<'a, T: old_io::Reader> CqlReader for T {
                 if flags == 0x0001 {
                     (None, None)
                 } else {
-                    let keyspace_str = self.read_cql_str();
-                    let table_str = self.read_cql_str();
+                    let keyspace_str = try!(self.read_cql_str());
+                    let table_str = try!(self.read_cql_str());
                     (Some(keyspace_str), Some(table_str))
                 };
-            let col_name = self.read_cql_str();
-            let type_key = self.read_be_u16().unwrap();
+            let col_name = try!(self.read_cql_str());
+            let type_key = try!(self.read_be_u16());
             let type_name =
                 if type_key >= 0x20 {
-                    column_type(self.read_be_u16().unwrap())
+                    column_type(try!(self.read_be_u16()))
                 } else {
                     ColumnType::Unknown
                 };
@@ -215,51 +233,51 @@ impl<'a, T: old_io::Reader> CqlReader for T {
             });
         }
 
-        Metadata {
+        Ok(Metadata {
             flags: flags,
             column_count: column_count,
             keyspace: keyspace,
             table: table,
             row_metadata: row_metadata,
-        }
+        })
     }
 
-    fn read_cql_rows(&mut self) -> Rows {
-        let metadata = Rc::new(self.read_cql_metadata());
-        let rows_count = self.read_be_u32().unwrap();
+    fn read_cql_rows(&mut self) -> CqlResult<Rows> {
+        let metadata = Rc::new(try!(self.read_cql_metadata()));
+        let rows_count = try!(self.read_be_u32());
 
         let mut rows:Vec<Row> = Vec::new();
         for _ in (0 .. rows_count) {
             let mut row = Row{ cols: Vec::new(), metadata: metadata.clone() };
             for meta in row.metadata.row_metadata.iter() {
                 let col = match meta.col_type.clone() {
-                    ColumnType::Ascii => Cql::CqlString(self.read_cql_long_str()),
-                    ColumnType::VarChar => Cql::CqlString(self.read_cql_long_str()),
-                    ColumnType::Text => Cql::CqlString(self.read_cql_long_str()),
+                    ColumnType::Ascii => Cql::CqlString(try!(self.read_cql_long_str())),
+                    ColumnType::VarChar => Cql::CqlString(try!(self.read_cql_long_str())),
+                    ColumnType::Text => Cql::CqlString(try!(self.read_cql_long_str())),
 
-                    ColumnType::Int => Cql::Cqli32(match self.read_be_i32().unwrap() {
+                    ColumnType::Int => Cql::Cqli32(match try!(self.read_be_i32()) {
                             -1 => None,
-                            4 => Some(self.read_be_i32().unwrap()),
+                            4 => Some(try!(self.read_be_i32())),
                             len => panic!("Invalid length with i32: {}", len),
                         }),
-                    ColumnType::Bigint => Cql::Cqli64(Some(self.read_be_i64().unwrap())),
+                    ColumnType::Bigint => Cql::Cqli64(Some(try!(self.read_be_i64()))),
                     ColumnType::Float => Cql::Cqlf32(unsafe{
-                        match self.read_be_i32().unwrap() {
+                        match try!(self.read_be_i32()) {
                             -1 => None,
-                            4 => Some(transmute(self.read_be_u32().unwrap())),
+                            4 => Some(transmute(try!(self.read_be_u32()))),
                             len => panic!("Invalid length with f32: {}", len),
                         }
                     }),
                     ColumnType::Double => Cql::Cqlf64(unsafe{
-                        match self.read_be_i32().unwrap() {
+                        match try!(self.read_be_i32()) {
                             -1 => None,
-                            4 => Some(transmute(self.read_be_u64().unwrap())),
+                            4 => Some(transmute(try!(self.read_be_u64()))),
                             len => panic!("Invalid length with f64: {}", len),
                         }
                     }),
 
                     ColumnType::List => Cql::CqlList({
-                        match self.read_be_i32().unwrap() {
+                        match try!(self.read_be_i32()) {
                             -1 => None,
                             _ => {
                                 //let data = self.read_bytes(len as usize);
@@ -284,9 +302,9 @@ impl<'a, T: old_io::Reader> CqlReader for T {
 //                    Set => ,
 
                     _ => {
-                        match self.read_be_i32().unwrap() {
+                        match try!(self.read_be_i32()) {
                             -1 => (),
-                            len => { self.read_bytes(len as usize); },
+                            len => { try!(self.read_bytes(len as usize)); },
                         }
                         Cql::CqlUnknown
                     }
@@ -297,14 +315,14 @@ impl<'a, T: old_io::Reader> CqlReader for T {
             rows.push(row);
         }
 
-        Rows {
+        Ok(Rows {
             metadata: metadata,
             rows: rows,
-        }
+        })
     }
 
-    fn read_cql_response(&mut self) -> Response {
-        let header_data = self.read_bytes(8);
+    fn read_cql_response(&mut self) -> CqlResult<Response> {
+        let header_data = try!(self.read_bytes(8));
 
         let version = header_data[0];
         let flags = header_data[1];
@@ -315,41 +333,41 @@ impl<'a, T: old_io::Reader> CqlReader for T {
             ((header_data[6] as u32) << 8u32) +
             (header_data[7] as u32);
 
-        let body_data = self.read_bytes(length as usize);
-        let mut reader = std::old_io::BufferedReader::new(body_data.as_slice());
+        let body_data = try!(self.read_bytes(length as usize));
+        let mut reader = BufferedReader::new(body_data.as_slice());
 
         let body = match opcode {
             OpcodeResp::Ready => ResponseBody::Ready,
             OpcodeResp::Auth => {
-                ResponseBody::Auth(reader.read_cql_str())
+                ResponseBody::Auth(try!(reader.read_cql_str()))
             }
             OpcodeResp::Error => {
-                let code = reader.read_be_u32().unwrap();
-                let msg = reader.read_cql_str();
+                let code = try!(reader.read_be_u32());
+                let msg = try!(reader.read_cql_str());
                 ResponseBody::Error(code, msg)
             },
             OpcodeResp::Result => {
-                let code = reader.read_be_u32().unwrap();
+                let code = try!(reader.read_be_u32());
                 match code {
                     0x0001 => {
                         ResponseBody::Void
                     },
                     0x0002 => {
-                        ResponseBody::Rows(reader.read_cql_rows())
+                        ResponseBody::Rows(try!(reader.read_cql_rows()))
                     },
                     0x0003 => {
-                        let msg = reader.read_cql_str();
+                        let msg = try!(reader.read_cql_str());
                         ResponseBody::Keyspace(msg)
                     },
                     0x0004 => {
-                        let id = reader.read_u8().unwrap();
-                        let metadata = reader.read_cql_metadata();
+                        let id = try!(reader.read_u8());
+                        let metadata = try!(reader.read_cql_metadata());
                         ResponseBody::Prepared(id, metadata)
                     },
                     0x0005 => {
-                        let change  = reader.read_cql_str();
-                        let keyspace = reader.read_cql_str();
-                        let table = reader.read_cql_str();
+                        let change  = try!(reader.read_cql_str());
+                        let keyspace = try!(reader.read_cql_str());
+                        let table = try!(reader.read_cql_str());
                         ResponseBody::SchemaChange(change, keyspace, table)
                     },
                     _ => {
@@ -369,13 +387,13 @@ impl<'a, T: old_io::Reader> CqlReader for T {
         }
         */
 
-        return Response {
+        Ok(Response {
             version: version,
             flags: flags,
             stream: stream,
             opcode: opcode,
             body: body,
-        };
+        })
     }
 }
 
@@ -386,11 +404,11 @@ struct Pair {
 }
 
 impl CqlSerializable for Pair {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) {
-        buf.write_be_u16(self.key.len() as u16).unwrap();
-        buf.write_all(self.key.as_slice()).unwrap();
-        buf.write_be_u16(self.value.len() as u16).unwrap();
-        buf.write_all(self.value.as_slice()).unwrap();
+    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
+        try!(buf.write_be_u16(self.key.len() as u16));
+        try!(buf.write_all(self.key.as_slice()));
+        try!(buf.write_be_u16(self.value.len() as u16));
+        buf.write_all(self.value.as_slice())
     }
 
     fn len(&self) -> usize {
@@ -404,11 +422,12 @@ pub struct StringMap {
 }
 
 impl CqlSerializable for StringMap {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) {
-        buf.write_be_u16(self.pairs.len() as u16).unwrap();
+    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
+        try!(buf.write_be_u16(self.pairs.len() as u16));
         for pair in self.pairs.iter() {
-            pair.serialize(buf);
+            try!(pair.serialize(buf));
         }
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -526,23 +545,23 @@ pub struct Response {
 }
 
 impl CqlSerializable for Request {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) {
-        buf.write_u8(self.version).unwrap();
-        buf.write_u8(self.flags).unwrap();
-        buf.write_i8(self.stream).unwrap();
-        buf.write_u8(self.opcode.clone() as u8).unwrap();
-        buf.write_be_u32((self.len()-8) as u32).unwrap();
+    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
+        try!(buf.write_u8(self.version));
+        try!(buf.write_u8(self.flags));
+        try!(buf.write_i8(self.stream));
+        try!(buf.write_u8(self.opcode.clone() as u8));
+        try!(buf.write_be_u32((self.len()-8) as u32));
 
         match self.body {
             RequestBody::RequestStartup(ref map) => {
                 map.serialize(buf)
             },
             RequestBody::RequestQuery(ref query_str, ref consistency) => {
-                buf.write_be_u32(query_str.len() as u32).unwrap();
-                buf.write_all(query_str.as_bytes()).unwrap();
-                buf.write_be_u16(consistency.clone() as u16).unwrap();
+                try!(buf.write_be_u32(query_str.len() as u32));
+                try!(buf.write_all(query_str.as_bytes()));
+                buf.write_be_u16(consistency.clone() as u16)
             },
-            _ => (),
+            _ => panic!("not implemented request type"),
         }
     }
     fn len(&self) -> usize {
@@ -553,9 +572,7 @@ impl CqlSerializable for Request {
             RequestBody::RequestQuery(ref query_str, _) => {
                 4 + query_str.len() + 2
             },
-            _ => {
-                0
-            }
+            _ => panic!("not implemented request type"),
         }
     }
 }
@@ -608,29 +625,24 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn query(&mut self, query_str: &str, con: Consistency) -> Response {
+    pub fn query(&mut self, query_str: &str, con: Consistency) -> CqlResult<Response> {
         let q = query(0, query_str, con);
 
         let mut writer = Vec::new();
 
-        q.serialize::<Vec<u8>>(&mut writer);
-        self.socket.write_all(writer.as_slice()).unwrap();
-        self.socket.read_cql_response()
+        try!(q.serialize::<Vec<u8>>(&mut writer));
+        try!(self.socket.write_all(writer.as_slice()));
+        let resp = try!(self.socket.read_cql_response());
+        Ok(resp)
     }
 }
 
-pub fn connect(addr: &str) -> Result<Client, Error> {
-    let res = tcp::TcpStream::connect(addr);
-    if res.is_err() {
-        return Err(Error{name: "Error".to_string(), msg: "Failed to connect to server".to_string()});
-    }
-
-    let mut socket = res.unwrap();
-
+pub fn connect(addr: &str) -> CqlResult<Client> {
+    let mut socket = try!(tcp::TcpStream::connect(addr));
     let msg_startup = startup();
-    msg_startup.serialize::<tcp::TcpStream>(&mut socket);
+    try!(msg_startup.serialize::<tcp::TcpStream>(&mut socket));
 
-    let response = socket.read_cql_response();
+    let response = try!(socket.read_cql_response());
     match response.body {
         ResponseBody::Ready => {
             Ok(Client { socket: socket })
