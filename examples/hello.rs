@@ -1,9 +1,7 @@
 
 extern crate cql;
 
-use cql::CqlResult;
-
-fn run() -> CqlResult<()> {
+fn run() -> cql::Result<()> {
     let mut client = try!(cql::connect("localhost:9042"));
 
     let mut res;

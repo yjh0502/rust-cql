@@ -1,14 +1,19 @@
-#![feature(old_io)]
 #![feature(core)]
+#![feature(test)]
+#![feature(io)]
+#![feature(net)]
 
 extern crate num;
+extern crate byteorder;
+extern crate test;
 
-use std::old_io;
-use std::old_io::{IoResult,IoError,BufferedReader};
+use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use std::rc::Rc;
 use std::error::FromError;
 use std::borrow::ToOwned;
-use std::old_io::net::tcp;
+use std::io;
+use std::io::{Write,Read};
+use std::net::TcpStream;
 use std::intrinsics::transmute;
 use std::string::FromUtf8Error;
 
@@ -136,54 +141,78 @@ fn column_type(val: u16) -> ColumnType {
 }
 
 #[derive(Debug)]
-pub enum CqlError {
-    IoError(IoError),
-    FromUtf8Error(FromUtf8Error),
+pub enum Error {
+    UnexpectedEOF,
+    Io(io::Error),
+    ByteOrder(byteorder::Error),
+    Utf8(FromUtf8Error),
 }
 
-impl FromError<IoError> for CqlError {
-    fn from_error(err: IoError) -> CqlError {
-        CqlError::IoError(err)
+impl FromError<io::Error> for Error {
+    fn from_error(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
-impl FromError<FromUtf8Error> for CqlError {
-    fn from_error(err: FromUtf8Error) -> CqlError {
-        CqlError::FromUtf8Error(err)
+impl FromError<byteorder::Error> for Error {
+    fn from_error(err: byteorder::Error) -> Error {
+        match err {
+            byteorder::Error::UnexpectedEOF => Error::UnexpectedEOF,
+            byteorder::Error::Io(e) => Error::Io(e),
+        }
     }
 }
 
-pub type CqlResult<T> = Result<T, CqlError>;
+impl FromError<FromUtf8Error> for Error {
+    fn from_error(err: FromUtf8Error) -> Error {
+        Error::Utf8(err)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 trait CqlSerializable {
     fn len(&self) -> usize;
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()>;
+    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()>;
 }
 
 trait CqlReader {
-    fn read_bytes(&mut self, len: usize) -> IoResult<Vec<u8>>;
-    fn read_cql_str(&mut self) -> CqlResult<String>;
-    fn read_cql_long_str(&mut self) -> CqlResult<Option<String>>;
-    fn read_cql_rows(&mut self) -> CqlResult<Rows>;
+    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>>;
+    fn read_cql_str(&mut self) -> Result<String>;
+    fn read_cql_long_str(&mut self) -> Result<Option<String>>;
+    fn read_cql_rows(&mut self) -> Result<Rows>;
 
-    fn read_cql_metadata(&mut self) -> CqlResult<Metadata>;
-    fn read_cql_response(&mut self) -> CqlResult<Response>;
+    fn read_cql_metadata(&mut self) -> Result<Metadata>;
+    fn read_cql_response(&mut self) -> Result<Response>;
 }
 
-impl<'a, T: old_io::Reader> CqlReader for T {
-    fn read_bytes(&mut self, len: usize) -> IoResult<Vec<u8>> {
-        self.read_exact(len)
+fn read_full<R: io::Read>(rdr: &mut R, buf: &mut [u8]) -> Result<()> {
+    let mut nread = 0usize;
+    while nread < buf.len() {
+        match try!(rdr.read(&mut buf[nread..])) {
+            0 => return Err(Error::UnexpectedEOF),
+            n => nread += n,
+        }
+    }
+    Ok(())
+}
+
+impl<'a, T: Read> CqlReader for T {
+    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
+        let mut vec = vec![0; len];
+        try!(read_full(self, vec.as_mut_slice()));
+        Ok(vec)
     }
 
-    fn read_cql_str(&mut self) -> CqlResult<String> {
-        let len = try!(self.read_be_u16());
+    fn read_cql_str(&mut self) -> Result<String> {
+        let len = try!(self.read_u16::<BigEndian>());
         let bytes = try!(self.read_bytes(len as usize));
         let s = try!(String::from_utf8(bytes));
         Ok(s)
     }
 
-    fn read_cql_long_str(&mut self) -> CqlResult<Option<String>> {
-        match try!(self.read_be_i32()) {
+    fn read_cql_long_str(&mut self) -> Result<Option<String>> {
+        match try!(self.read_i32::<BigEndian>()) {
             -1 => Ok(None),
             len => {
                 let bytes = try!(self.read_bytes(len as usize));
@@ -193,9 +222,9 @@ impl<'a, T: old_io::Reader> CqlReader for T {
         }
     }
 
-    fn read_cql_metadata(&mut self) -> CqlResult<Metadata> {
-        let flags = try!(self.read_be_u32());
-        let column_count = try!(self.read_be_u32());
+    fn read_cql_metadata(&mut self) -> Result<Metadata> {
+        let flags = try!(self.read_u32::<BigEndian>());
+        let column_count = try!(self.read_u32::<BigEndian>());
         let (keyspace, table) =
             if flags == 0x0001 {
                 let keyspace_str = try!(self.read_cql_str());
@@ -216,10 +245,10 @@ impl<'a, T: old_io::Reader> CqlReader for T {
                     (Some(keyspace_str), Some(table_str))
                 };
             let col_name = try!(self.read_cql_str());
-            let type_key = try!(self.read_be_u16());
+            let type_key = try!(self.read_u16::<BigEndian>());
             let type_name =
                 if type_key >= 0x20 {
-                    column_type(try!(self.read_be_u16()))
+                    column_type(try!(self.read_u16::<BigEndian>()))
                 } else {
                     ColumnType::Unknown
                 };
@@ -242,9 +271,9 @@ impl<'a, T: old_io::Reader> CqlReader for T {
         })
     }
 
-    fn read_cql_rows(&mut self) -> CqlResult<Rows> {
+    fn read_cql_rows(&mut self) -> Result<Rows> {
         let metadata = Rc::new(try!(self.read_cql_metadata()));
-        let rows_count = try!(self.read_be_u32());
+        let rows_count = try!(self.read_u32::<BigEndian>());
 
         let mut rows:Vec<Row> = Vec::new();
         for _ in (0 .. rows_count) {
@@ -255,29 +284,29 @@ impl<'a, T: old_io::Reader> CqlReader for T {
                     ColumnType::VarChar => Cql::CqlString(try!(self.read_cql_long_str())),
                     ColumnType::Text => Cql::CqlString(try!(self.read_cql_long_str())),
 
-                    ColumnType::Int => Cql::Cqli32(match try!(self.read_be_i32()) {
+                    ColumnType::Int => Cql::Cqli32(match try!(self.read_i32::<BigEndian>()) {
                             -1 => None,
-                            4 => Some(try!(self.read_be_i32())),
+                            4 => Some(try!(self.read_i32::<BigEndian>())),
                             len => panic!("Invalid length with i32: {}", len),
                         }),
-                    ColumnType::Bigint => Cql::Cqli64(Some(try!(self.read_be_i64()))),
+                    ColumnType::Bigint => Cql::Cqli64(Some(try!(self.read_i64::<BigEndian>()))),
                     ColumnType::Float => Cql::Cqlf32(unsafe{
-                        match try!(self.read_be_i32()) {
+                        match try!(self.read_i32::<BigEndian>()) {
                             -1 => None,
-                            4 => Some(transmute(try!(self.read_be_u32()))),
+                            4 => Some(transmute(try!(self.read_u32::<BigEndian>()))),
                             len => panic!("Invalid length with f32: {}", len),
                         }
                     }),
                     ColumnType::Double => Cql::Cqlf64(unsafe{
-                        match try!(self.read_be_i32()) {
+                        match try!(self.read_i32::<BigEndian>()) {
                             -1 => None,
-                            4 => Some(transmute(try!(self.read_be_u64()))),
+                            4 => Some(transmute(try!(self.read_u64::<BigEndian>()))),
                             len => panic!("Invalid length with f64: {}", len),
                         }
                     }),
 
                     ColumnType::List => Cql::CqlList({
-                        match try!(self.read_be_i32()) {
+                        match try!(self.read_i32::<BigEndian>()) {
                             -1 => None,
                             _ => {
                                 //let data = self.read_bytes(len as usize);
@@ -302,7 +331,7 @@ impl<'a, T: old_io::Reader> CqlReader for T {
 //                    Set => ,
 
                     _ => {
-                        match try!(self.read_be_i32()) {
+                        match try!(self.read_i32::<BigEndian>()) {
                             -1 => (),
                             len => { try!(self.read_bytes(len as usize)); },
                         }
@@ -321,7 +350,7 @@ impl<'a, T: old_io::Reader> CqlReader for T {
         })
     }
 
-    fn read_cql_response(&mut self) -> CqlResult<Response> {
+    fn read_cql_response(&mut self) -> Result<Response> {
         let header_data = try!(self.read_bytes(8));
 
         let version = header_data[0];
@@ -334,7 +363,7 @@ impl<'a, T: old_io::Reader> CqlReader for T {
             (header_data[7] as u32);
 
         let body_data = try!(self.read_bytes(length as usize));
-        let mut reader = BufferedReader::new(body_data.as_slice());
+        let mut reader = io::BufReader::new(body_data.as_slice());
 
         let body = match opcode {
             OpcodeResp::Ready => ResponseBody::Ready,
@@ -342,12 +371,12 @@ impl<'a, T: old_io::Reader> CqlReader for T {
                 ResponseBody::Auth(try!(reader.read_cql_str()))
             }
             OpcodeResp::Error => {
-                let code = try!(reader.read_be_u32());
+                let code = try!(reader.read_u32::<BigEndian>());
                 let msg = try!(reader.read_cql_str());
                 ResponseBody::Error(code, msg)
             },
             OpcodeResp::Result => {
-                let code = try!(reader.read_be_u32());
+                let code = try!(reader.read_u32::<BigEndian>());
                 match code {
                     0x0001 => {
                         ResponseBody::Void
@@ -404,11 +433,12 @@ struct Pair {
 }
 
 impl CqlSerializable for Pair {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
-        try!(buf.write_be_u16(self.key.len() as u16));
+    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
+        try!(buf.write_u16::<BigEndian>(self.key.len() as u16));
         try!(buf.write_all(self.key.as_slice()));
-        try!(buf.write_be_u16(self.value.len() as u16));
-        buf.write_all(self.value.as_slice())
+        try!(buf.write_u16::<BigEndian>(self.value.len() as u16));
+        try!(buf.write_all(self.value.as_slice()));
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -422,8 +452,8 @@ pub struct StringMap {
 }
 
 impl CqlSerializable for StringMap {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
-        try!(buf.write_be_u16(self.pairs.len() as u16));
+    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
+        try!(buf.write_u16::<BigEndian>(self.pairs.len() as u16));
         for pair in self.pairs.iter() {
             try!(pair.serialize(buf));
         }
@@ -545,21 +575,22 @@ pub struct Response {
 }
 
 impl CqlSerializable for Request {
-    fn serialize<T: old_io::Writer>(&self, buf: &mut T) -> IoResult<()> {
+    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
         try!(buf.write_u8(self.version));
         try!(buf.write_u8(self.flags));
         try!(buf.write_i8(self.stream));
         try!(buf.write_u8(self.opcode.clone() as u8));
-        try!(buf.write_be_u32((self.len()-8) as u32));
+        try!(buf.write_u32::<BigEndian>((self.len()-8) as u32));
 
         match self.body {
             RequestBody::RequestStartup(ref map) => {
                 map.serialize(buf)
             },
             RequestBody::RequestQuery(ref query_str, ref consistency) => {
-                try!(buf.write_be_u32(query_str.len() as u32));
+                try!(buf.write_u32::<BigEndian>(query_str.len() as u32));
                 try!(buf.write_all(query_str.as_bytes()));
-                buf.write_be_u16(consistency.clone() as u16)
+                try!(buf.write_u16::<BigEndian>(consistency.clone() as u16));
+                Ok(())
             },
             _ => panic!("not implemented request type"),
         }
@@ -621,11 +652,11 @@ fn query(stream: i8, query_str: &str, con: Consistency) -> Request {
 }
 
 pub struct Client {
-    socket: tcp::TcpStream,
+    socket: TcpStream,
 }
 
 impl Client {
-    pub fn query(&mut self, query_str: &str, con: Consistency) -> CqlResult<Response> {
+    pub fn query(&mut self, query_str: &str, con: Consistency) -> Result<Response> {
         let q = query(0, query_str, con);
 
         let mut writer = Vec::new();
@@ -637,8 +668,8 @@ impl Client {
     }
 }
 
-pub fn connect(addr: &str) -> CqlResult<Client> {
-    let mut socket = try!(tcp::TcpStream::connect(addr));
+pub fn connect(addr: &str) -> Result<Client> {
+    let mut socket = try!(TcpStream::connect(addr));
     let msg_startup = startup();
 
     let mut buf = Vec::new();
@@ -675,5 +706,46 @@ pub fn connect(addr: &str) -> CqlResult<Client> {
         }
         */
         _ => panic!("invalid opcode: {}", response.opcode as u8)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CqlReader;
+    use test::Bencher;
+
+    #[test]
+    fn resp_ready() {
+        let v = vec![129, 0, 0, 0, 0, 0, 0, 49, 0, 0, 36, 0, 0, 35, 67, 97, 110, 110, 111, 116, 32, 97, 100, 100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0];
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
+    }
+
+    #[test]
+    fn resp_error() {
+        let v = vec![129, 0, 0, 0, 0, 0, 0, 85, 0, 0, 36, 0, 0, 67, 67, 97, 110, 110, 111, 116, 32, 97, 100, 100, 32, 97, 108, 114, 101, 97, 100, 121, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 99, 111, 108, 117, 109, 110, 32, 102, 97, 109, 105, 108, 121, 32, 34, 116, 101, 115, 116, 34, 32, 116, 111, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116];
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
+    }
+
+    #[test]
+    fn resp_result() {
+        let v = vec![129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0, 8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25];
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
+    }
+
+    #[bench]
+    fn bench_decode(b: &mut Bencher) {
+        let v = vec![129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0, 8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25];
+        b.bytes = v.len() as u64;
+        b.iter(|| {
+            let mut s = v.as_slice();
+            let resp = s.read_cql_response();
+            assert!(resp.is_ok())
+        });
     }
 }
