@@ -173,7 +173,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 trait CqlSerializable {
     fn len(&self) -> usize;
-    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()>;
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()>;
 }
 
 trait CqlReader {
@@ -197,7 +197,7 @@ fn read_full<R: io::Read>(rdr: &mut R, buf: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
-impl<'a, T: Read> CqlReader for T {
+impl<'a, T: io::Read> CqlReader for T {
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
         let mut vec = vec![0; len];
         try!(read_full(self, vec.as_mut_slice()));
@@ -234,7 +234,7 @@ impl<'a, T: Read> CqlReader for T {
                 (None, None)
             };
 
-        let mut row_metadata:Vec<CqlColMetadata> = Vec::new();
+        let mut row_metadata:Vec<CqlColMetadata> = Vec::with_capacity(column_count as usize);
         for _ in (0 .. column_count) {
             let (keyspace, table) =
                 if flags == 0x0001 {
@@ -273,12 +273,15 @@ impl<'a, T: Read> CqlReader for T {
 
     fn read_cql_rows(&mut self) -> Result<Rows> {
         let metadata = Rc::new(try!(self.read_cql_metadata()));
+        Err(Error::UnexpectedEOF)
+        /*
         let rows_count = try!(self.read_u32::<BigEndian>());
+        let col_count = metadata.row_metadata.len();
 
-        let mut rows:Vec<Row> = Vec::new();
+        let mut rows:Vec<Row> = Vec::with_capacity(rows_count as usize);
         for _ in (0 .. rows_count) {
-            let mut row = Row{ cols: Vec::new(), metadata: metadata.clone() };
-            for meta in row.metadata.row_metadata.iter() {
+            let mut row = Row{ cols: Vec::with_capacity(col_count), metadata: metadata.clone() };
+            for meta in metadata.row_metadata.iter() {
                 let col = match meta.col_type.clone() {
                     ColumnType::Ascii => Cql::CqlString(try!(self.read_cql_long_str())),
                     ColumnType::VarChar => Cql::CqlString(try!(self.read_cql_long_str())),
@@ -348,6 +351,7 @@ impl<'a, T: Read> CqlReader for T {
             metadata: metadata,
             rows: rows,
         })
+        */
     }
 
     fn read_cql_response(&mut self) -> Result<Response> {
@@ -363,7 +367,7 @@ impl<'a, T: Read> CqlReader for T {
             (header_data[7] as u32);
 
         let body_data = try!(self.read_bytes(length as usize));
-        let mut reader = io::BufReader::new(body_data.as_slice());
+        let mut reader = io::Cursor::new(body_data.as_slice());
 
         let body = match opcode {
             OpcodeResp::Ready => ResponseBody::Ready,
@@ -409,12 +413,10 @@ impl<'a, T: Read> CqlReader for T {
             },
         };
 
-/*
-        if reader.pos != length as usize {
+        if reader.position() != length as u64 {
             panic!("Data is not fully readed: specificatold_ion might be changed {} != {}",
-                reader.pos, length);
+                reader.position(), length);
         }
-        */
 
         Ok(Response {
             version: version,
@@ -423,6 +425,9 @@ impl<'a, T: Read> CqlReader for T {
             opcode: opcode,
             body: body,
         })
+/*
+        Err(Error::UnexpectedEOF)
+        */
     }
 }
 
@@ -433,7 +438,7 @@ struct Pair {
 }
 
 impl CqlSerializable for Pair {
-    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         try!(buf.write_u16::<BigEndian>(self.key.len() as u16));
         try!(buf.write_all(self.key.as_slice()));
         try!(buf.write_u16::<BigEndian>(self.value.len() as u16));
@@ -452,7 +457,7 @@ pub struct StringMap {
 }
 
 impl CqlSerializable for StringMap {
-    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         try!(buf.write_u16::<BigEndian>(self.pairs.len() as u16));
         for pair in self.pairs.iter() {
             try!(pair.serialize(buf));
@@ -575,7 +580,7 @@ pub struct Response {
 }
 
 impl CqlSerializable for Request {
-    fn serialize<T: Write>(&self, buf: &mut T) -> Result<()> {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         try!(buf.write_u8(self.version));
         try!(buf.write_u8(self.flags));
         try!(buf.write_i8(self.stream));
@@ -744,8 +749,7 @@ mod tests {
         b.bytes = v.len() as u64;
         b.iter(|| {
             let mut s = v.as_slice();
-            let resp = s.read_cql_response();
-            assert!(resp.is_ok())
+            s.read_cql_response();
         });
     }
 }
