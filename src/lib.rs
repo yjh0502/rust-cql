@@ -3,21 +3,20 @@
 #![feature(io)]
 #![feature(net)]
 
-extern crate num;
 extern crate byteorder;
+extern crate num;
 extern crate test;
 
-use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
-use std::rc::Rc;
-use std::error::FromError;
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::borrow::ToOwned;
-use std::io;
-use std::io::{Write,Read};
-use std::net::TcpStream;
 use std::intrinsics::transmute;
+use std::io;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::rc::Rc;
 use std::string::FromUtf8Error;
 
-pub static CQL_VERSION:u8 = 0x01;
+pub static CQL_VERSION: u8 = 0x01;
 
 #[derive(Clone, Debug)]
 enum OpcodeReq {
@@ -44,13 +43,12 @@ enum OpcodeResp {
 
 fn opcode(val: u8) -> OpcodeResp {
     match val {
-//        0x01 => Startup,
-//        0x04 => Cred,
-//        0x05 => Opts,
-//        0x07 => Query,
-//        0x09 => Prepare,
-//        0x0B => Register,
-
+        //        0x01 => Startup,
+        //        0x04 => Cred,
+        //        0x05 => Opts,
+        //        0x07 => Query,
+        //        0x09 => Prepare,
+        //        0x0B => Register,
         0x00 => OpcodeResp::Error,
         0x02 => OpcodeResp::Ready,
         0x03 => OpcodeResp::Auth,
@@ -58,7 +56,7 @@ fn opcode(val: u8) -> OpcodeResp {
         0x08 => OpcodeResp::Result,
         0x0A => OpcodeResp::Exec,
         0x0C => OpcodeResp::Event,
-        _ => OpcodeResp::Error
+        _ => OpcodeResp::Error,
     }
 }
 
@@ -85,7 +83,7 @@ pub fn consistency(val: u16) -> Consistency {
         5 => Consistency::All,
         6 => Consistency::LocalQuorum,
         7 => Consistency::EachQuorum,
-        _ => Consistency::Unknown
+        _ => Consistency::Unknown,
     }
 }
 
@@ -136,7 +134,7 @@ fn column_type(val: u16) -> ColumnType {
         0x0020 => ColumnType::List,
         0x0021 => ColumnType::Map,
         0x0022 => ColumnType::Set,
-        _ => ColumnType::Unknown
+        _ => ColumnType::Unknown,
     }
 }
 
@@ -144,27 +142,17 @@ fn column_type(val: u16) -> ColumnType {
 pub enum Error {
     UnexpectedEOF,
     Io(io::Error),
-    ByteOrder(byteorder::Error),
     Utf8(FromUtf8Error),
 }
 
-impl FromError<io::Error> for Error {
-    fn from_error(err: io::Error) -> Error {
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
         Error::Io(err)
     }
 }
 
-impl FromError<byteorder::Error> for Error {
-    fn from_error(err: byteorder::Error) -> Error {
-        match err {
-            byteorder::Error::UnexpectedEOF => Error::UnexpectedEOF,
-            byteorder::Error::Io(e) => Error::Io(e),
-        }
-    }
-}
-
-impl FromError<FromUtf8Error> for Error {
-    fn from_error(err: FromUtf8Error) -> Error {
+impl From<FromUtf8Error> for Error {
+    fn from(err: FromUtf8Error) -> Self {
         Error::Utf8(err)
     }
 }
@@ -225,40 +213,37 @@ impl<'a, T: io::Read> CqlReader for T {
     fn read_cql_metadata(&mut self) -> Result<Metadata> {
         let flags = try!(self.read_u32::<BigEndian>());
         let column_count = try!(self.read_u32::<BigEndian>());
-        let (keyspace, table) =
-            if flags == 0x0001 {
+        let (keyspace, table) = if flags == 0x0001 {
+            let keyspace_str = try!(self.read_cql_str());
+            let table_str = try!(self.read_cql_str());
+            (Some(keyspace_str), Some(table_str))
+        } else {
+            (None, None)
+        };
+
+        let mut row_metadata: Vec<CqlColMetadata> = Vec::with_capacity(column_count as usize);
+        for _ in (0..column_count) {
+            let (keyspace, table) = if flags == 0x0001 {
+                (None, None)
+            } else {
                 let keyspace_str = try!(self.read_cql_str());
                 let table_str = try!(self.read_cql_str());
                 (Some(keyspace_str), Some(table_str))
-            } else {
-                (None, None)
             };
-
-        let mut row_metadata:Vec<CqlColMetadata> = Vec::with_capacity(column_count as usize);
-        for _ in (0 .. column_count) {
-            let (keyspace, table) =
-                if flags == 0x0001 {
-                    (None, None)
-                } else {
-                    let keyspace_str = try!(self.read_cql_str());
-                    let table_str = try!(self.read_cql_str());
-                    (Some(keyspace_str), Some(table_str))
-                };
             let col_name = try!(self.read_cql_str());
             let type_key = try!(self.read_u16::<BigEndian>());
-            let type_name =
-                if type_key >= 0x20 {
-                    column_type(try!(self.read_u16::<BigEndian>()))
-                } else {
-                    ColumnType::Unknown
-                };
+            let type_name = if type_key >= 0x20 {
+                column_type(try!(self.read_u16::<BigEndian>()))
+            } else {
+                ColumnType::Unknown
+            };
 
             row_metadata.push(CqlColMetadata {
                 keyspace: keyspace,
                 table: table,
                 col_name: col_name,
                 col_type: column_type(type_key),
-                col_type_name: type_name
+                col_type_name: type_name,
             });
         }
 
@@ -361,61 +346,52 @@ impl<'a, T: io::Read> CqlReader for T {
         let flags = header_data[1];
         let stream = header_data[2] as i8;
         let opcode = opcode(header_data[3]);
-        let length = ((header_data[4] as u32) << 24u32) +
-            ((header_data[5] as u32) << 16u32) +
-            ((header_data[6] as u32) << 8u32) +
-            (header_data[7] as u32);
+        let length = ((header_data[4] as u32) << 24u32) + ((header_data[5] as u32) << 16u32)
+            + ((header_data[6] as u32) << 8u32) + (header_data[7] as u32);
 
         let body_data = try!(self.read_bytes(length as usize));
         let mut reader = io::Cursor::new(body_data.as_slice());
 
         let body = match opcode {
             OpcodeResp::Ready => ResponseBody::Ready,
-            OpcodeResp::Auth => {
-                ResponseBody::Auth(try!(reader.read_cql_str()))
-            }
+            OpcodeResp::Auth => ResponseBody::Auth(try!(reader.read_cql_str())),
             OpcodeResp::Error => {
                 let code = try!(reader.read_u32::<BigEndian>());
                 let msg = try!(reader.read_cql_str());
                 ResponseBody::Error(code, msg)
-            },
+            }
             OpcodeResp::Result => {
                 let code = try!(reader.read_u32::<BigEndian>());
                 match code {
-                    0x0001 => {
-                        ResponseBody::Void
-                    },
-                    0x0002 => {
-                        ResponseBody::Rows(try!(reader.read_cql_rows()))
-                    },
+                    0x0001 => ResponseBody::Void,
+                    0x0002 => ResponseBody::Rows(try!(reader.read_cql_rows())),
                     0x0003 => {
                         let msg = try!(reader.read_cql_str());
                         ResponseBody::Keyspace(msg)
-                    },
+                    }
                     0x0004 => {
                         let id = try!(reader.read_u8());
                         let metadata = try!(reader.read_cql_metadata());
                         ResponseBody::Prepared(id, metadata)
-                    },
+                    }
                     0x0005 => {
-                        let change  = try!(reader.read_cql_str());
+                        let change = try!(reader.read_cql_str());
                         let keyspace = try!(reader.read_cql_str());
                         let table = try!(reader.read_cql_str());
                         ResponseBody::SchemaChange(change, keyspace, table)
-                    },
+                    }
                     _ => {
                         panic!("Unknown code for result: {}", code);
-                    },
+                    }
                 }
             }
             _ => {
                 panic!("Invalid response from server");
-            },
+            }
         };
 
         if reader.position() != length as u64 {
-            panic!("Data is not fully readed: specificatold_ion might be changed {} != {}",
-                reader.position(), length);
+            panic!("short: {} != {}", reader.position(), length);
         }
 
         Ok(Response {
@@ -425,7 +401,7 @@ impl<'a, T: io::Read> CqlReader for T {
             opcode: opcode,
             body: body,
         })
-/*
+        /*
         Err(Error::UnexpectedEOF)
         */
     }
@@ -585,29 +561,23 @@ impl CqlSerializable for Request {
         try!(buf.write_u8(self.flags));
         try!(buf.write_i8(self.stream));
         try!(buf.write_u8(self.opcode.clone() as u8));
-        try!(buf.write_u32::<BigEndian>((self.len()-8) as u32));
+        try!(buf.write_u32::<BigEndian>((self.len() - 8) as u32));
 
         match self.body {
-            RequestBody::RequestStartup(ref map) => {
-                map.serialize(buf)
-            },
+            RequestBody::RequestStartup(ref map) => map.serialize(buf),
             RequestBody::RequestQuery(ref query_str, ref consistency) => {
                 try!(buf.write_u32::<BigEndian>(query_str.len() as u32));
                 try!(buf.write_all(query_str.as_bytes()));
                 try!(buf.write_u16::<BigEndian>(consistency.clone() as u16));
                 Ok(())
-            },
+            }
             _ => panic!("not implemented request type"),
         }
     }
     fn len(&self) -> usize {
         8 + match self.body {
-            RequestBody::RequestStartup(ref map) => {
-                map.len()
-            },
-            RequestBody::RequestQuery(ref query_str, _) => {
-                4 + query_str.len() + 2
-            },
+            RequestBody::RequestStartup(ref map) => map.len(),
+            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 2,
             _ => panic!("not implemented request type"),
         }
     }
@@ -615,8 +585,11 @@ impl CqlSerializable for Request {
 
 fn startup() -> Request {
     let body = StringMap {
-            pairs:vec![Pair{key: b"CQL_VERSION".to_owned(), value: b"3.0.0".to_owned()}],
-        };
+        pairs: vec![Pair {
+            key: b"CQL_VERSION".to_vec(),
+            value: b"3.0.0".to_vec(),
+        }],
+    };
     return Request {
         version: CQL_VERSION,
         flags: 0x00,
@@ -683,9 +656,7 @@ pub fn connect(addr: &str) -> Result<Client> {
 
     let response = try!(socket.read_cql_response());
     match response.body {
-        ResponseBody::Ready => {
-            Ok(Client { socket: socket })
-        },
+        ResponseBody::Ready => Ok(Client { socket: socket }),
         /*
         Auth(_) => {
             match(creds) {
@@ -710,7 +681,7 @@ pub fn connect(addr: &str) -> Result<Client> {
 
         }
         */
-        _ => panic!("invalid opcode: {}", response.opcode as u8)
+        _ => panic!("invalid opcode: {}", response.opcode as u8),
     }
 }
 
@@ -721,7 +692,11 @@ mod tests {
 
     #[test]
     fn resp_ready() {
-        let v = vec![129, 0, 0, 0, 0, 0, 0, 49, 0, 0, 36, 0, 0, 35, 67, 97, 110, 110, 111, 116, 32, 97, 100, 100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0];
+        let v = vec![
+            129, 0, 0, 0, 0, 0, 0, 49, 0, 0, 36, 0, 0, 35, 67, 97, 110, 110, 111, 116, 32, 97, 100,
+            100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97, 99,
+            101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0,
+        ];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
         assert!(resp.is_ok())
@@ -729,7 +704,13 @@ mod tests {
 
     #[test]
     fn resp_error() {
-        let v = vec![129, 0, 0, 0, 0, 0, 0, 85, 0, 0, 36, 0, 0, 67, 67, 97, 110, 110, 111, 116, 32, 97, 100, 100, 32, 97, 108, 114, 101, 97, 100, 121, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 99, 111, 108, 117, 109, 110, 32, 102, 97, 109, 105, 108, 121, 32, 34, 116, 101, 115, 116, 34, 32, 116, 111, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116];
+        let v = vec![
+            129, 0, 0, 0, 0, 0, 0, 85, 0, 0, 36, 0, 0, 67, 67, 97, 110, 110, 111, 116, 32, 97, 100,
+            100, 32, 97, 108, 114, 101, 97, 100, 121, 32, 101, 120, 105, 115, 116, 105, 110, 103,
+            32, 99, 111, 108, 117, 109, 110, 32, 102, 97, 109, 105, 108, 121, 32, 34, 116, 101,
+            115, 116, 34, 32, 116, 111, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117,
+            115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116,
+        ];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
         assert!(resp.is_ok())
@@ -737,7 +718,11 @@ mod tests {
 
     #[test]
     fn resp_result() {
-        let v = vec![129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0, 8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25];
+        let v = vec![
+            129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115,
+            116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0,
+            8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25,
+        ];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
         assert!(resp.is_ok())
@@ -745,7 +730,11 @@ mod tests {
 
     #[bench]
     fn bench_decode(b: &mut Bencher) {
-        let v = vec![129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0, 8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25];
+        let v = vec![
+            129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115,
+            116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0,
+            8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25,
+        ];
         b.bytes = v.len() as u64;
         b.iter(|| {
             let mut s = v.as_slice();
