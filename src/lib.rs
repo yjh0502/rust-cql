@@ -1,14 +1,7 @@
-#![feature(core)]
-#![feature(test)]
-#![feature(io)]
-#![feature(net)]
-
 extern crate byteorder;
 extern crate num;
-extern crate test;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use std::borrow::ToOwned;
 use std::intrinsics::transmute;
 use std::io;
 use std::io::{Read, Write};
@@ -222,7 +215,7 @@ impl<'a, T: io::Read> CqlReader for T {
         };
 
         let mut row_metadata: Vec<CqlColMetadata> = Vec::with_capacity(column_count as usize);
-        for _ in (0..column_count) {
+        for _ in 0..column_count {
             let (keyspace, table) = if flags == 0x0001 {
                 (None, None)
             } else {
@@ -688,7 +681,6 @@ pub fn connect(addr: &str) -> Result<Client> {
 #[cfg(test)]
 mod tests {
     use super::CqlReader;
-    use test::Bencher;
 
     #[test]
     fn resp_ready() {
@@ -728,6 +720,7 @@ mod tests {
         assert!(resp.is_ok())
     }
 
+    /*
     #[bench]
     fn bench_decode(b: &mut Bencher) {
         let v = vec![
@@ -741,4 +734,5 @@ mod tests {
             s.read_cql_response();
         });
     }
+    */
 }
