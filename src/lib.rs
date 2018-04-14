@@ -173,11 +173,11 @@ fn parse_varint(v: &[u8]) -> i64 {
 }
 
 trait CqlSerializable {
-    fn len(&self) -> usize;
+    fn len_(&self) -> usize;
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()>;
 
     fn to_vec(&self) -> Result<Vec<u8>> {
-        let mut s = Vec::with_capacity(self.len());
+        let mut s = Vec::with_capacity(self.len_());
         self.serialize(&mut s)?;
         Ok(s)
     }
@@ -584,23 +584,44 @@ trait CqlReader: io::Read {
 
 impl<'a, T: io::Read> CqlReader for T {}
 
+struct ShortString<'a>(&'a str);
+impl<'a> CqlSerializable for ShortString<'a> {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u16::<BigEndian>(self.0.len() as u16)?;
+        buf.write_all(self.0.as_bytes())?;
+        Ok(())
+    }
+    fn len_(&self) -> usize {
+        self.0.len() + 4
+    }
+}
+
+struct LongString<'a>(&'a str);
+impl<'a> CqlSerializable for LongString<'a> {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u32::<BigEndian>(self.0.len() as u32)?;
+        buf.write_all(self.0.as_bytes())?;
+        Ok(())
+    }
+    fn len_(&self) -> usize {
+        self.0.len() + 4
+    }
+}
+
 #[derive(Debug)]
 struct Pair {
-    key: Vec<u8>,
-    value: Vec<u8>,
+    key: String,
+    value: String,
 }
 
 impl CqlSerializable for Pair {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
-        buf.write_u16::<BigEndian>(self.key.len() as u16)?;
-        buf.write_all(self.key.as_slice())?;
-        buf.write_u16::<BigEndian>(self.value.len() as u16)?;
-        buf.write_all(self.value.as_slice())?;
-        Ok(())
+        ShortString(&self.key).serialize(buf)?;
+        ShortString(&self.value).serialize(buf)
     }
 
-    fn len(&self) -> usize {
-        return 4 + self.key.len() + self.value.len();
+    fn len_(&self) -> usize {
+        ShortString(&self.key).len_() + ShortString(&self.value).len_()
     }
 }
 
@@ -618,10 +639,10 @@ impl CqlSerializable for StringMap {
         Ok(())
     }
 
-    fn len(&self) -> usize {
+    fn len_(&self) -> usize {
         let mut len = 2usize;
         for pair in self.pairs.iter() {
-            len += pair.len();
+            len += pair.len_();
         }
         len
     }
@@ -686,6 +707,25 @@ pub enum Value {
     CqlUnknown,
 }
 
+/*
+impl CqlSerializable for Value {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        use Value::*;
+        match self {
+            CqlString(ref s) => {
+            }
+            _ => unimplemented!(),
+        }
+    }
+    fn len(&self) -> usize {
+        use Value::*;
+        match self {
+            _ => unimplemented!(),
+        }
+    }
+}
+*/
+
 #[derive(Debug)]
 pub struct Row {
     cols: Vec<Value>,
@@ -716,8 +756,8 @@ impl CqlSerializable for BodyStartup {
         self.body.serialize(buf)
     }
 
-    fn len(&self) -> usize {
-        self.body.len()
+    fn len_(&self) -> usize {
+        self.body.len_()
     }
 }
 
@@ -727,16 +767,15 @@ struct BodyQuery {
 }
 impl CqlSerializable for BodyQuery {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
-        buf.write_u32::<BigEndian>(self.query.len() as u32)?;
-        buf.write_all(self.query.as_bytes())?;
+        LongString(&self.query).serialize(buf)?;
 
         buf.write_u16::<BigEndian>(self.con.clone() as u16)?;
         buf.write_u8(0)?;
         Ok(())
     }
 
-    fn len(&self) -> usize {
-        4 + self.query.len() + 3
+    fn len_(&self) -> usize {
+        LongString(&self.query).len_() + 3
     }
 }
 
@@ -745,13 +784,11 @@ struct BodyPrepare {
 }
 impl CqlSerializable for BodyPrepare {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
-        buf.write_u32::<BigEndian>(self.query.len() as u32)?;
-        buf.write_all(self.query.as_bytes())?;
-        Ok(())
+        LongString(&self.query).serialize(buf)
     }
 
-    fn len(&self) -> usize {
-        4 + self.query.len()
+    fn len_(&self) -> usize {
+        LongString(&self.query).len_()
     }
 }
 
@@ -761,7 +798,7 @@ impl CqlSerializable for BodyEmpty {
         Ok(())
     }
 
-    fn len(&self) -> usize {
+    fn len_(&self) -> usize {
         0
     }
 }
@@ -818,13 +855,13 @@ impl<B: CqlSerializable> CqlSerializable for Request<B> {
         buf.write_i16::<BigEndian>(header.stream)?;
         buf.write_u8(header.opcode.clone() as u8)?;
 
-        buf.write_u32::<BigEndian>(self.body.len() as u32)?;
+        buf.write_u32::<BigEndian>(self.body.len_() as u32)?;
         self.body.serialize(buf)?;
         Ok(())
     }
 
-    fn len(&self) -> usize {
-        self.body.len() + 9
+    fn len_(&self) -> usize {
+        self.body.len_() + 9
     }
 }
 
@@ -837,8 +874,8 @@ pub struct Response {
 fn startup() -> Request<BodyStartup> {
     let body = StringMap {
         pairs: vec![Pair {
-            key: b"CQL_VERSION".to_vec(),
-            value: b"3.0.0".to_vec(),
+            key: "CQL_VERSION".to_owned(),
+            value: "3.0.0".to_owned(),
         }],
     };
     Request {
@@ -936,6 +973,7 @@ impl Client {
         self.socket.read_cql_response()
     }
 
+    //TODO: signature
     pub fn query(&mut self, query_str: &str, con: Consistency) -> Result<Response> {
         let q = query(0, query_str, con);
 
