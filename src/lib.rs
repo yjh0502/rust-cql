@@ -13,16 +13,15 @@ pub static CQL_VERSION: u8 = 0x03;
 
 #[derive(Clone, Debug)]
 enum Opcode {
-    //requests
+    // req
     Startup = 0x01,
-    // Cred = 0x04,
+    Cred = 0x04,
     Opts = 0x05,
     Query = 0x07,
-    //TODO
-    // Prepare = 0x09,
-    // Register = 0x0B,
+    Prepare = 0x09,
+    Register = 0x0B,
 
-    //responces
+    // resp
     Error = 0x00,
     Ready = 0x02,
     Auth = 0x03,
@@ -35,15 +34,15 @@ enum Opcode {
 fn opcode(val: u8) -> Opcode {
     use Opcode::*;
     match val {
-        //TODO
-        /*
+        // req
         0x01 => Startup,
         0x04 => Cred,
         0x05 => Opts,
         0x07 => Query,
         0x09 => Prepare,
         0x0B => Register,
-        */
+
+        // resp
         0x00 => Error,
         0x02 => Ready,
         0x03 => Auth,
@@ -267,7 +266,7 @@ impl<'a, T: io::Read> CqlReader for T {
                 metadata: metadata.clone(),
             };
             for meta in metadata.row_metadata.iter() {
-                let col = match meta.col_type.clone() {
+                let col = match meta.col_type {
                     ColumnType::Ascii => Cql::CqlString(self.read_cql_long_str()?),
                     ColumnType::VarChar => Cql::CqlString(self.read_cql_long_str()?),
                     ColumnType::Text => Cql::CqlString(self.read_cql_long_str()?),
@@ -521,14 +520,11 @@ pub struct Row {
 
 impl Row {
     pub fn get_column(&self, col_name: &str) -> Option<Cql> {
-        let mut i = 0;
-        for metadata in self.metadata.row_metadata.iter() {
-            if metadata.col_name == col_name {
-                return Some(self.cols[i].clone());
-            }
-            i += 1;
-        }
-        None
+        self.metadata
+            .row_metadata
+            .iter()
+            .position(|m| m.col_name == col_name)
+            .map(|i| self.cols[i].clone())
     }
 }
 
@@ -544,6 +540,16 @@ pub enum RequestBody {
     RequestCred(Vec<Vec<u8>>),
     RequestQuery(String, Consistency),
     RequestOptions,
+}
+
+impl RequestBody {
+    fn len(&self) -> usize {
+        match self {
+            RequestBody::RequestStartup(ref map) => map.len(),
+            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 3,
+            _ => panic!("not implemented request type"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -597,7 +603,7 @@ impl CqlSerializable for Request {
         buf.write_i16::<BigEndian>(header.stream)?;
         buf.write_u8(header.opcode.clone() as u8)?;
 
-        buf.write_u32::<BigEndian>((self.len() - 9) as u32)?;
+        buf.write_u32::<BigEndian>(self.body.len() as u32)?;
 
         match self.body {
             RequestBody::RequestStartup(ref map) => map.serialize(buf),
@@ -611,12 +617,9 @@ impl CqlSerializable for Request {
             _ => panic!("not implemented request type"),
         }
     }
+
     fn len(&self) -> usize {
-        9 + match self.body {
-            RequestBody::RequestStartup(ref map) => map.len(),
-            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 3,
-            _ => panic!("not implemented request type"),
-        }
+        self.body.len() + 9
     }
 }
 
