@@ -1,4 +1,6 @@
 extern crate byteorder;
+#[macro_use]
+extern crate log;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::intrinsics::transmute;
@@ -18,6 +20,7 @@ enum Opcode {
     Opts = 0x05,
     Query = 0x07,
     Prepare = 0x09,
+    Execute = 0x0A,
     Register = 0x0B,
 
     // resp
@@ -26,7 +29,6 @@ enum Opcode {
     Auth = 0x03,
     Supported = 0x06,
     Result = 0x08,
-    Exec = 0x0A,
     Event = 0x0C,
 }
 
@@ -39,6 +41,7 @@ fn opcode(val: u8) -> Opcode {
         0x05 => Opts,
         0x07 => Query,
         0x09 => Prepare,
+        0x0A => Execute,
         0x0B => Register,
 
         // resp
@@ -47,7 +50,6 @@ fn opcode(val: u8) -> Opcode {
         0x03 => Auth,
         0x06 => Supported,
         0x08 => Result,
-        0x0A => Exec,
         0x0C => Event,
         _ => Error,
     }
@@ -451,7 +453,7 @@ trait CqlReader: io::Read {
         use ColumnType::*;
         use Value::*;
 
-        eprintln!("ty: {:?}, len: {:?}", col_type, len);
+        trace!("ty: {:?}, len: {:?}", col_type, len);
 
         let col = match col_type {
             Ascii => CqlString(self.read_cql_str_len(len)?),
@@ -738,6 +740,21 @@ impl CqlSerializable for BodyQuery {
     }
 }
 
+struct BodyPrepare {
+    query: String,
+}
+impl CqlSerializable for BodyPrepare {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u32::<BigEndian>(self.query.len() as u32)?;
+        buf.write_all(self.query.as_bytes())?;
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        4 + self.query.len()
+    }
+}
+
 struct BodyEmpty;
 impl CqlSerializable for BodyEmpty {
     fn serialize<T: io::Write>(&self, _buf: &mut T) -> Result<()> {
@@ -824,10 +841,10 @@ fn startup() -> Request<BodyStartup> {
             value: b"3.0.0".to_vec(),
         }],
     };
-    return Request {
+    Request {
         header: FrameHeader::new(1, Opcode::Startup),
         body: BodyStartup { body },
-    };
+    }
 }
 
 /*
@@ -842,20 +859,30 @@ fn auth(creds: Vec<Vec<u8>>) -> Request {
 
 #[allow(unused)]
 fn options() -> Request<BodyEmpty> {
-    return Request {
+    Request {
         header: FrameHeader::new(1, Opcode::Opts),
         body: BodyEmpty,
-    };
+    }
 }
 
 fn query(stream: i16, query_str: &str, con: Consistency) -> Request<BodyQuery> {
-    return Request {
+    Request {
         header: FrameHeader::new(stream, Opcode::Query),
         body: BodyQuery {
             query: query_str.to_owned(),
             con,
         },
-    };
+    }
+}
+
+#[allow(unused)]
+fn prepare(stream: i16, query_str: &str) -> Request<BodyPrepare> {
+    Request {
+        header: FrameHeader::new(stream, Opcode::Prepare),
+        body: BodyPrepare {
+            query: query_str.to_owned(),
+        },
+    }
 }
 
 pub struct Client {

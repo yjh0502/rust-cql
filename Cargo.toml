@@ -12,8 +12,8 @@ keywords = ["cql", "cassandra"]
 license = "MIT"
 
 [dependencies]
-num = "0.1"
 byteorder = "1.2"
+log = "0.4"
 
 [profile.bench]
 debug = true
