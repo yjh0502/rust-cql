@@ -1,25 +1,31 @@
-
 extern crate cql;
 
 fn run() -> cql::Result<()> {
-    let mut client = try!(cql::connect("localhost:9042"));
+    let mut client = cql::Client::new("localhost:9042")?;
 
-    let mut res;
-    res = try!(client.query("create keyspace rust with replication = \
-        {'class': 'SimpleStrategy', 'replication_factor':1}", cql::Consistency::One));
-    println!("{:?}", res);
+    eprintln!("ready");
 
-    res = try!(client.query("create table rust.test (id text primary key, value float)",
-         cql::Consistency::One));
-    println!("{:?}", res);
+    let res = client.query(
+        "create keyspace rust with replication = \
+         {'class': 'SimpleStrategy', 'replication_factor':1}",
+        cql::Consistency::One,
+    )?;
+    println!("response: {:?}", res);
 
-    res = try!(client.query("insert into rust.test (id, value) values ('asdf', 1.2345)",
-         cql::Consistency::One));
-    println!("{:?}", res);
+    let res = client.query(
+        "create table rust.test (id text primary key, value float)",
+        cql::Consistency::One,
+    )?;
+    println!("create table: {:?}", res);
 
-    res = try!(client.query("select * from rust.test",
-         cql::Consistency::One));
-    println!("{:?}", res);
+    let res = client.query(
+        "insert into rust.test (id, value) values ('asdf', 1.2345)",
+        cql::Consistency::One,
+    )?;
+    println!("insert: {:?}", res);
+
+    let res = client.query("select * from rust.test", cql::Consistency::One)?;
+    println!("select: {:?}", res);
 
     Ok(())
 }

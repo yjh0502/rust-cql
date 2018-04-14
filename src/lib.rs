@@ -82,7 +82,7 @@ pub fn consistency(val: u16) -> Consistency {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ColumnType {
     Custom = 0x0000,
     Ascii = 0x0001,
@@ -162,7 +162,7 @@ trait CqlSerializable {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()>;
 }
 
-trait CqlReader {
+trait CqlReader: io::Read {
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>>;
     fn read_cql_str(&mut self) -> Result<String>;
     fn read_cql_long_str(&mut self) -> Result<Option<String>>;
@@ -170,6 +170,71 @@ trait CqlReader {
 
     fn read_cql_metadata(&mut self) -> Result<Metadata>;
     fn read_cql_response(&mut self) -> Result<Response>;
+
+    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Cql> {
+        use ColumnType::*;
+
+        let col = match col_type {
+            Ascii => Cql::CqlString(self.read_cql_long_str()?),
+            Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
+            VarChar => Cql::CqlString(self.read_cql_long_str()?),
+            Text => Cql::CqlString(self.read_cql_long_str()?),
+
+            Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
+                -1 => None,
+                4 => Some(self.read_i32::<BigEndian>()?),
+                _len => return Err(Error::Protocol),
+            }),
+            Float => Cql::Cqlf32(unsafe {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    4 => Some(transmute(self.read_u32::<BigEndian>()?)),
+                    _len => return Err(Error::Protocol),
+                }
+            }),
+            Double => Cql::Cqlf64(unsafe {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    4 => Some(transmute(self.read_u64::<BigEndian>()?)),
+                    _len => return Err(Error::Protocol),
+                }
+            }),
+
+            List => Cql::CqlList({
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    _ => {
+                        //let data = self.read_bytes(len as usize);
+                        panic!("List parse not implemented: {}");
+                    }
+                }
+            }),
+
+            //                    Custom => ,
+            //                    Blob => ,
+            //                    Boolean => ,
+            //                    Counter => ,
+            //                    Decimal => ,
+            //                    Timestamp => ,
+            //                    UUID => ,
+            //                    Varint => ,
+            //                    TimeUUID => ,
+            //                    Inet => ,
+            //                    List => ,
+            //                    Map => ,
+            //                    Set => ,
+            _ => {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => (),
+                    len => {
+                        self.read_bytes(len as usize)?;
+                    }
+                }
+                Cql::CqlUnknown
+            }
+        };
+        Ok(col)
+    }
 }
 
 fn read_full<R: io::Read>(rdr: &mut R, buf: &mut [u8]) -> Result<()> {
@@ -261,74 +326,16 @@ impl<'a, T: io::Read> CqlReader for T {
 
         let mut rows: Vec<Row> = Vec::with_capacity(rows_count as usize);
         for _ in 0..rows_count {
-            let mut row = Row {
-                cols: Vec::with_capacity(col_count),
-                metadata: metadata.clone(),
-            };
+            let mut cols = Vec::with_capacity(col_count);
+
             for meta in metadata.row_metadata.iter() {
-                let col = match meta.col_type {
-                    ColumnType::Ascii => Cql::CqlString(self.read_cql_long_str()?),
-                    ColumnType::VarChar => Cql::CqlString(self.read_cql_long_str()?),
-                    ColumnType::Text => Cql::CqlString(self.read_cql_long_str()?),
-
-                    ColumnType::Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
-                        -1 => None,
-                        4 => Some(self.read_i32::<BigEndian>()?),
-                        _len => return Err(Error::Protocol),
-                    }),
-                    ColumnType::Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
-                    ColumnType::Float => Cql::Cqlf32(unsafe {
-                        match self.read_i32::<BigEndian>()? {
-                            -1 => None,
-                            4 => Some(transmute(self.read_u32::<BigEndian>()?)),
-                            _len => return Err(Error::Protocol),
-                        }
-                    }),
-                    ColumnType::Double => Cql::Cqlf64(unsafe {
-                        match self.read_i32::<BigEndian>()? {
-                            -1 => None,
-                            4 => Some(transmute(self.read_u64::<BigEndian>()?)),
-                            _len => return Err(Error::Protocol),
-                        }
-                    }),
-
-                    ColumnType::List => Cql::CqlList({
-                        match self.read_i32::<BigEndian>()? {
-                            -1 => None,
-                            _ => {
-                                //let data = self.read_bytes(len as usize);
-                                panic!("List parse not implemented: {}");
-                            }
-                        }
-                    }),
-
-                    //                    Custom => ,
-                    //                    Blob => ,
-                    //                    Boolean => ,
-                    //                    Counter => ,
-                    //                    Decimal => ,
-                    //                    Timestamp => ,
-                    //                    UUID => ,
-                    //                    Varint => ,
-                    //                    TimeUUID => ,
-                    //                    Inet => ,
-                    //                    List => ,
-                    //                    Map => ,
-                    //                    Set => ,
-                    _ => {
-                        match self.read_i32::<BigEndian>()? {
-                            -1 => (),
-                            len => {
-                                self.read_bytes(len as usize)?;
-                            }
-                        }
-                        Cql::CqlUnknown
-                    }
-                };
-
-                row.cols.push(col);
+                cols.push(self.read_cql_col(meta.col_type)?);
             }
-            rows.push(row);
+
+            rows.push(Row {
+                cols,
+                metadata: metadata.clone(),
+            });
         }
 
         Ok(Rows {
@@ -534,21 +541,35 @@ pub struct Rows {
     rows: Vec<Row>,
 }
 
-#[derive(Debug)]
-pub enum RequestBody {
-    RequestStartup(StringMap),
-    RequestCred(Vec<Vec<u8>>),
-    RequestQuery(String, Consistency),
-    RequestOptions,
+struct BodyStartup {
+    body: StringMap,
+}
+impl CqlSerializable for BodyStartup {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        self.body.serialize(buf)
+    }
+
+    fn len(&self) -> usize {
+        self.body.len()
+    }
 }
 
-impl RequestBody {
+struct BodyQuery {
+    query: String,
+    con: Consistency,
+}
+impl CqlSerializable for BodyQuery {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u32::<BigEndian>(self.query.len() as u32)?;
+        buf.write_all(self.query.as_bytes())?;
+
+        buf.write_u16::<BigEndian>(self.con.clone() as u16)?;
+        buf.write_u8(0)?;
+        Ok(())
+    }
+
     fn len(&self) -> usize {
-        match self {
-            RequestBody::RequestStartup(ref map) => map.len(),
-            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 3,
-            _ => panic!("not implemented request type"),
-        }
+        4 + self.query.len() + 3
     }
 }
 
@@ -584,18 +605,12 @@ impl FrameHeader {
 }
 
 #[derive(Debug)]
-struct Request {
+struct Request<B: CqlSerializable> {
     header: FrameHeader,
-    body: RequestBody,
+    body: B,
 }
 
-#[derive(Debug)]
-pub struct Response {
-    header: FrameHeader,
-    body: ResponseBody,
-}
-
-impl CqlSerializable for Request {
+impl<B: CqlSerializable> CqlSerializable for Request<B> {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         let header = &self.header;
         buf.write_u8(header.version)?;
@@ -604,18 +619,8 @@ impl CqlSerializable for Request {
         buf.write_u8(header.opcode.clone() as u8)?;
 
         buf.write_u32::<BigEndian>(self.body.len() as u32)?;
-
-        match self.body {
-            RequestBody::RequestStartup(ref map) => map.serialize(buf),
-            RequestBody::RequestQuery(ref query_str, ref consistency) => {
-                buf.write_u32::<BigEndian>(query_str.len() as u32)?;
-                buf.write_all(query_str.as_bytes())?;
-                buf.write_u16::<BigEndian>(consistency.clone() as u16)?;
-                buf.write_u8(0)?;
-                Ok(())
-            }
-            _ => panic!("not implemented request type"),
-        }
+        self.body.serialize(buf)?;
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -623,7 +628,13 @@ impl CqlSerializable for Request {
     }
 }
 
-fn startup() -> Request {
+#[derive(Debug)]
+pub struct Response {
+    header: FrameHeader,
+    body: ResponseBody,
+}
+
+fn startup() -> Request<BodyStartup> {
     let body = StringMap {
         pairs: vec![Pair {
             key: b"CQL_VERSION".to_vec(),
@@ -632,10 +643,11 @@ fn startup() -> Request {
     };
     return Request {
         header: FrameHeader::new(1, Opcode::Startup),
-        body: RequestBody::RequestStartup(body),
+        body: BodyStartup { body },
     };
 }
 
+/*
 #[allow(unused)]
 fn auth(creds: Vec<Vec<u8>>) -> Request {
     return Request {
@@ -651,11 +663,15 @@ fn options() -> Request {
         body: RequestBody::RequestOptions,
     };
 }
+*/
 
-fn query(stream: i16, query_str: &str, con: Consistency) -> Request {
+fn query(stream: i16, query_str: &str, con: Consistency) -> Request<BodyQuery> {
     return Request {
         header: FrameHeader::new(stream, Opcode::Query),
-        body: RequestBody::RequestQuery(query_str.to_string(), con),
+        body: BodyQuery {
+            query: query_str.to_owned(),
+            con,
+        },
     };
 }
 
@@ -664,6 +680,44 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn new(addr: &str) -> Result<Client> {
+        let mut socket = TcpStream::connect(addr)?;
+        let msg_startup = startup();
+
+        let mut buf = Vec::new();
+        msg_startup.serialize::<Vec<u8>>(&mut buf)?;
+        socket.write_all(buf.as_slice())?;
+
+        let response = socket.read_cql_response()?;
+        match response.body {
+            ResponseBody::Ready => Ok(Client { socket: socket }),
+            /*
+            Auth(_) => {
+                match(creds) {
+                    Some(cred) => {
+                        let msg_auth = Auth(cred);
+                        msg_auth.serialize::<net_tcp::TcpSocketBuf>(&buf);
+                        let response = buf.read_cql_response();
+                        match response.body {
+                            Ready => result::Ok(Client { socket: buf }),
+                            Error(_, ref msg) => {
+                                result::Err(Error(~"Error", copy *msg))
+                            }
+                            _ => {
+                                result::Err(Error(~"Error", ~"Server returned unknown message"))
+                            },
+                        }
+                    },
+                    None => {
+                        result::Err(Error(~"Error", ~"Credential should be provided"))
+                    },
+                }
+            }
+            */
+            _ => panic!("invalid opcode: {}", response.header.opcode as u8),
+        }
+    }
+
     pub fn query(&mut self, query_str: &str, con: Consistency) -> Result<Response> {
         let q = query(0, query_str, con);
 
@@ -672,45 +726,6 @@ impl Client {
         self.socket.write_all(writer.as_slice())?;
 
         self.socket.read_cql_response()
-    }
-}
-
-pub fn connect(addr: &str) -> Result<Client> {
-    let mut socket = TcpStream::connect(addr)?;
-    let msg_startup = startup();
-
-    let mut buf = Vec::new();
-    msg_startup.serialize::<Vec<u8>>(&mut buf)?;
-    socket.write_all(buf.as_slice())?;
-
-    let response = socket.read_cql_response()?;
-    match response.body {
-        ResponseBody::Ready => Ok(Client { socket: socket }),
-        /*
-        Auth(_) => {
-            match(creds) {
-                Some(cred) => {
-                    let msg_auth = Auth(cred);
-                    msg_auth.serialize::<net_tcp::TcpSocketBuf>(&buf);
-                    let response = buf.read_cql_response();
-                    match response.body {
-                        Ready => result::Ok(Client { socket: buf }),
-                        Error(_, ref msg) => {
-                            result::Err(Error(~"Error", copy *msg))
-                        }
-                        _ => {
-                            result::Err(Error(~"Error", ~"Server returned unknown message"))
-                        },
-                    }
-                },
-                None => {
-                    result::Err(Error(~"Error", ~"Credential should be provided"))
-                },
-            }
-
-        }
-        */
-        _ => panic!("invalid opcode: {}", response.header.opcode as u8),
     }
 }
 
