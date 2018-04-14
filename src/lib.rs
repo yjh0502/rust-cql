@@ -133,6 +133,7 @@ fn column_type(val: u16) -> ColumnType {
 
 #[derive(Debug)]
 pub enum Error {
+    Protocol,
     UnexpectedEOF,
     Io(io::Error),
     Utf8(FromUtf8Error),
@@ -378,10 +379,21 @@ impl<'a, T: io::Read> CqlReader for T {
                         ResponseBody::Prepared(id, metadata)
                     }
                     0x0005 => {
-                        let change = reader.read_cql_str()?;
-                        let keyspace = reader.read_cql_str()?;
-                        let table = reader.read_cql_str()?;
-                        ResponseBody::SchemaChange(change, keyspace, table)
+                        let change_type = reader.read_cql_str()?;
+                        let target = reader.read_cql_str()?;
+                        let ks_name = reader.read_cql_str()?;
+
+                        let name = match target.as_str() {
+                            "KEYSPACE" => None,
+                            "TABLE" | "TYPE" => {
+                                let target_name = reader.read_cql_str()?;
+                                Some(target_name)
+                            }
+                            _ => {
+                                return Err(Error::Protocol);
+                            }
+                        };
+                        ResponseBody::SchemaChange(change_type, target, ks_name, name)
                     }
                     _ => {
                         panic!("Unknown code for result: {}", code);
@@ -537,7 +549,7 @@ pub enum ResponseBody {
     Rows(Rows),
     Keyspace(String),
     Prepared(u8, Metadata),
-    SchemaChange(String, String, String),
+    SchemaChange(String, String, String, Option<String>),
 }
 
 #[derive(Debug)]
