@@ -11,7 +11,7 @@ use std::string::FromUtf8Error;
 
 pub static CQL_VERSION: u8 = 0x03;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Opcode {
     // req
     Startup = 0x01,
@@ -300,6 +300,70 @@ trait CqlReader: io::Read {
         })
     }
 
+    fn read_cql_result(&mut self) -> Result<ResponseResult> {
+        use ResponseResult::*;
+
+        let code = self.read_u32::<BigEndian>()?;
+        let res = match code {
+            0x0001 => Void,
+            0x0002 => Rows(self.read_cql_rows()?),
+            0x0003 => {
+                let msg = self.read_cql_str()?;
+                Keyspace(msg)
+            }
+            0x0004 => {
+                let id = self.read_u8()?;
+                let metadata = self.read_cql_metadata()?;
+                Prepared(id, metadata)
+            }
+            0x0005 => {
+                let change_type = self.read_cql_str()?;
+                let target = self.read_cql_str()?;
+                let ks_name = self.read_cql_str()?;
+
+                let name = match target.as_str() {
+                    "KEYSPACE" => None,
+                    "TABLE" | "TYPE" => {
+                        let target_name = self.read_cql_str()?;
+                        Some(target_name)
+                    }
+                    _ => {
+                        return Err(Error::Protocol);
+                    }
+                };
+                SchemaChange(change_type, target, ks_name, name)
+            }
+            _ => return Err(Error::Protocol),
+        };
+        Ok(res)
+    }
+
+    fn read_cql_body(&mut self, opcode: Opcode) -> Result<ResponseBody> {
+        let body = match opcode {
+            Opcode::Ready => ResponseBody::Ready,
+            Opcode::Auth => ResponseBody::Auth(self.read_cql_str()?),
+            Opcode::Error => {
+                let code = self.read_u32::<BigEndian>()?;
+                let msg = self.read_cql_str()?;
+
+                match code {
+                    0x2400 => {
+                        let _ks = self.read_cql_str()?;
+                        let _namespace = self.read_cql_str()?;
+                    }
+                    _ => (),
+                }
+                ResponseBody::Error(code, msg)
+            }
+            Opcode::Result => ResponseBody::Result(self.read_cql_result()?),
+            Opcode::Supported => ResponseBody::Supported(self.read_cql_string_multimap()?),
+            _ => {
+                panic!("unknown response from server");
+            }
+        };
+        Ok(body)
+    }
+
     fn read_cql_response(&mut self) -> Result<Response> {
         let header_data = self.read_bytes(9)?;
         let mut header_reader = io::Cursor::new(header_data.as_slice());
@@ -315,66 +379,7 @@ trait CqlReader: io::Read {
         let body_data = self.read_bytes(length as usize)?;
         let mut reader = io::Cursor::new(body_data.as_slice());
 
-        let body = match opcode {
-            Opcode::Ready => ResponseBody::Ready,
-            Opcode::Auth => ResponseBody::Auth(reader.read_cql_str()?),
-            Opcode::Error => {
-                let code = reader.read_u32::<BigEndian>()?;
-                let msg = reader.read_cql_str()?;
-
-                match code {
-                    0x2400 => {
-                        let _ks = reader.read_cql_str()?;
-                        let _namespace = reader.read_cql_str()?;
-                    }
-                    _ => (),
-                }
-                ResponseBody::Error(code, msg)
-            }
-            Opcode::Result => {
-                let code = reader.read_u32::<BigEndian>()?;
-                match code {
-                    0x0001 => ResponseBody::Void,
-                    0x0002 => ResponseBody::Rows(reader.read_cql_rows()?),
-                    0x0003 => {
-                        let msg = reader.read_cql_str()?;
-                        ResponseBody::Keyspace(msg)
-                    }
-                    0x0004 => {
-                        let id = reader.read_u8()?;
-                        let metadata = reader.read_cql_metadata()?;
-                        ResponseBody::Prepared(id, metadata)
-                    }
-                    0x0005 => {
-                        let change_type = reader.read_cql_str()?;
-                        let target = reader.read_cql_str()?;
-                        let ks_name = reader.read_cql_str()?;
-
-                        let name = match target.as_str() {
-                            "KEYSPACE" => None,
-                            "TABLE" | "TYPE" => {
-                                let target_name = reader.read_cql_str()?;
-                                Some(target_name)
-                            }
-                            _ => {
-                                return Err(Error::Protocol);
-                            }
-                        };
-                        ResponseBody::SchemaChange(change_type, target, ks_name, name)
-                    }
-                    _ => {
-                        panic!("Unknown code for result: {}", code);
-                    }
-                }
-            }
-            Opcode::Supported => {
-                let body = reader.read_cql_string_multimap()?;
-                ResponseBody::Supported(body)
-            }
-            _ => {
-                panic!("unknown response from server");
-            }
-        };
+        let body = reader.read_cql_body(opcode)?;
         eprintln!("body: {:?}", body);
 
         println!("{:?} {:?}", header_data, body_data);
@@ -619,7 +624,11 @@ pub enum ResponseBody {
     Ready,
     Auth(String),
     Supported(StringMultiMap),
+    Result(ResponseResult),
+}
 
+#[derive(Debug)]
+pub enum ResponseResult {
     Void,
     Rows(Rows),
     Keyspace(String),
