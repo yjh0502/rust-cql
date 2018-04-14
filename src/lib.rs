@@ -160,6 +160,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 trait CqlSerializable {
     fn len(&self) -> usize;
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()>;
+
+    fn to_vec(&self) -> Result<Vec<u8>> {
+        let mut s = Vec::with_capacity(self.len());
+        self.serialize(&mut s)?;
+        Ok(s)
+    }
 }
 
 trait CqlReader: io::Read {
@@ -337,7 +343,7 @@ trait CqlReader: io::Read {
                 }
             }
             _ => {
-                panic!("Invalid response from server");
+                panic!("unknown response from server");
             }
         };
         eprintln!("body: {:?}", body);
@@ -565,6 +571,17 @@ impl CqlSerializable for BodyQuery {
     }
 }
 
+struct BodyEmpty;
+impl CqlSerializable for BodyEmpty {
+    fn serialize<T: io::Write>(&self, _buf: &mut T) -> Result<()> {
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
 #[derive(Debug)]
 pub enum ResponseBody {
     Error(u32, String),
@@ -647,15 +664,15 @@ fn auth(creds: Vec<Vec<u8>>) -> Request {
         body: RequestBody::RequestCred(creds),
     };
 }
+*/
 
 #[allow(unused)]
-fn options() -> Request {
+fn options() -> Request<BodyEmpty> {
     return Request {
         header: FrameHeader::new(1, Opcode::Opts),
-        body: RequestBody::RequestOptions,
+        body: BodyEmpty,
     };
 }
-*/
 
 fn query(stream: i16, query_str: &str, con: Consistency) -> Request<BodyQuery> {
     return Request {
@@ -710,13 +727,21 @@ impl Client {
         }
     }
 
+    pub fn options(&mut self) -> Result<Response> {
+        let q = options();
+        let msg = q.to_vec()?;
+
+        self.socket.write_all(&msg)?;
+        self.socket.read_cql_response()
+    }
+
     pub fn query(&mut self, query_str: &str, con: Consistency) -> Result<Response> {
         let q = query(0, query_str, con);
 
         let mut writer = Vec::new();
         q.serialize::<Vec<u8>>(&mut writer)?;
-        self.socket.write_all(writer.as_slice())?;
 
+        self.socket.write_all(writer.as_slice())?;
         self.socket.read_cql_response()
     }
 }
