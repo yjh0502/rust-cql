@@ -483,7 +483,19 @@ trait CqlReader: io::Read {
                 }
                 _len => return Err(Error::Protocol),
             }),
-            //Inet => ,
+            Inet => CqlInet(match len {
+                4 => {
+                    let mut v = [0u8; 4];
+                    self.read_full(&mut v)?;
+                    std::net::IpAddr::V4(v.into())
+                }
+                16 => {
+                    let mut v = [0u8; 16];
+                    self.read_full(&mut v)?;
+                    std::net::IpAddr::V6(v.into())
+                }
+                _len => return Err(Error::Protocol),
+            }),
             List | Map | Set | UDT | Tuple => {
                 unreachable!("non-singular type on read_cql_col_ty: {:?}", col_type);
             }
@@ -626,6 +638,7 @@ pub enum Value {
     CqlTimestamp(i64),
     CqlUUID([u8; 16]),
     CqlTimeUUID([u8; 16]),
+    CqlInet(std::net::IpAddr),
     CqlBigint(i64),
 
     CqlList(Vec<Value>),
