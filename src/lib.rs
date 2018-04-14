@@ -9,7 +9,7 @@ use std::net::TcpStream;
 use std::rc::Rc;
 use std::string::FromUtf8Error;
 
-pub static CQL_VERSION: u8 = 0x01;
+pub static CQL_VERSION: u8 = 0x03;
 
 #[derive(Clone, Debug)]
 enum OpcodeReq {
@@ -333,13 +333,15 @@ impl<'a, T: io::Read> CqlReader for T {
     }
 
     fn read_cql_response(&mut self) -> Result<Response> {
-        let header_data = self.read_bytes(4)?;
+        let header_data = self.read_bytes(9)?;
+        let mut header_reader = io::Cursor::new(header_data.as_slice());
 
-        let version = header_data[0];
-        let flags = header_data[1];
-        let stream = header_data[2] as i8;
-        let opcode = opcode(header_data[3]);
-        let length = self.read_u32::<BigEndian>()?;
+        // 9-byte header
+        let version = header_reader.read_u8()?;
+        let flags = header_reader.read_u8()?;
+        let stream = header_reader.read_i16::<BigEndian>()?;
+        let opcode = opcode(header_reader.read_u8()?);
+        let length = header_reader.read_u32::<BigEndian>()?;
         eprintln!("len: {:?}, opcode: {:?}", length, opcode);
 
         let body_data = self.read_bytes(length as usize)?;
@@ -351,6 +353,14 @@ impl<'a, T: io::Read> CqlReader for T {
             OpcodeResp::Error => {
                 let code = reader.read_u32::<BigEndian>()?;
                 let msg = reader.read_cql_str()?;
+
+                match code {
+                    0x2400 => {
+                        let _ks = reader.read_cql_str()?;
+                        let _namespace = reader.read_cql_str()?;
+                    }
+                    _ => (),
+                }
                 ResponseBody::Error(code, msg)
             }
             OpcodeResp::Result => {
@@ -384,7 +394,9 @@ impl<'a, T: io::Read> CqlReader for T {
         };
         eprintln!("body: {:?}", body);
 
-        if reader.position() + 8 != length as u64 {
+        println!("{:?} {:?}", header_data, body_data);
+
+        if reader.position() != length as u64 {
             eprintln!("short: {} != {}", reader.position(), length);
         }
 
@@ -532,7 +544,7 @@ pub enum ResponseBody {
 struct Request {
     version: u8,
     flags: u8,
-    stream: i8,
+    stream: i16,
     opcode: OpcodeReq,
     body: RequestBody,
 }
@@ -541,7 +553,7 @@ struct Request {
 pub struct Response {
     version: u8,
     flags: u8,
-    stream: i8,
+    stream: i16,
     opcode: OpcodeResp,
     body: ResponseBody,
 }
@@ -550,9 +562,9 @@ impl CqlSerializable for Request {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         buf.write_u8(self.version)?;
         buf.write_u8(self.flags)?;
-        buf.write_i8(self.stream)?;
+        buf.write_i16::<BigEndian>(self.stream)?;
         buf.write_u8(self.opcode.clone() as u8)?;
-        buf.write_u32::<BigEndian>((self.len() - 8) as u32)?;
+        buf.write_u32::<BigEndian>((self.len() - 9) as u32)?;
 
         match self.body {
             RequestBody::RequestStartup(ref map) => map.serialize(buf),
@@ -560,15 +572,16 @@ impl CqlSerializable for Request {
                 buf.write_u32::<BigEndian>(query_str.len() as u32)?;
                 buf.write_all(query_str.as_bytes())?;
                 buf.write_u16::<BigEndian>(consistency.clone() as u16)?;
+                buf.write_u8(0)?;
                 Ok(())
             }
             _ => panic!("not implemented request type"),
         }
     }
     fn len(&self) -> usize {
-        8 + match self.body {
+        9 + match self.body {
             RequestBody::RequestStartup(ref map) => map.len(),
-            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 2,
+            RequestBody::RequestQuery(ref query_str, _) => 4 + query_str.len() + 3,
             _ => panic!("not implemented request type"),
         }
     }
@@ -610,7 +623,7 @@ fn options() -> Request {
     };
 }
 
-fn query(stream: i8, query_str: &str, con: Consistency) -> Request {
+fn query(stream: i16, query_str: &str, con: Consistency) -> Request {
     return Request {
         version: CQL_VERSION,
         flags: 0x00,
@@ -629,11 +642,10 @@ impl Client {
         let q = query(0, query_str, con);
 
         let mut writer = Vec::new();
-
         q.serialize::<Vec<u8>>(&mut writer)?;
         self.socket.write_all(writer.as_slice())?;
-        let resp = self.socket.read_cql_response()?;
-        Ok(resp)
+
+        self.socket.read_cql_response()
     }
 }
 
@@ -682,11 +694,7 @@ mod tests {
 
     #[test]
     fn resp_ready() {
-        let v = vec![
-            129, 0, 0, 0, 0, 0, 0, 49, 0, 0, 36, 0, 0, 35, 67, 97, 110, 110, 111, 116, 32, 97, 100,
-            100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97, 99,
-            101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0,
-        ];
+        let v = vec![131, 0, 0, 1, 2, 0, 0, 0, 0];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
         assert!(resp.is_ok())
@@ -695,11 +703,9 @@ mod tests {
     #[test]
     fn resp_error() {
         let v = vec![
-            129, 0, 0, 0, 0, 0, 0, 85, 0, 0, 36, 0, 0, 67, 67, 97, 110, 110, 111, 116, 32, 97, 100,
-            100, 32, 97, 108, 114, 101, 97, 100, 121, 32, 101, 120, 105, 115, 116, 105, 110, 103,
-            32, 99, 111, 108, 117, 109, 110, 32, 102, 97, 109, 105, 108, 121, 32, 34, 116, 101,
-            115, 116, 34, 32, 116, 111, 32, 107, 101, 121, 115, 112, 97, 99, 101, 32, 34, 114, 117,
-            115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116,
+            131, 0, 0, 0, 0, 0, 0, 0, 49, 0, 0, 36, 0, 0, 35, 67, 97, 110, 110, 111, 116, 32, 97,
+            100, 100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97,
+            99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0,
         ];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
@@ -707,31 +713,48 @@ mod tests {
     }
 
     #[test]
-    fn resp_result() {
+    fn resp_schema_change() {
         let v = vec![
-            129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115,
-            116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0,
-            8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25,
+            131, 0, 0, 0, 8, 0, 0, 0, 29, 0, 0, 0, 5, 0, 7, 67, 82, 69, 65, 84, 69, 68, 0, 8, 75,
+            69, 89, 83, 80, 65, 67, 69, 0, 4, 114, 117, 115, 116,
         ];
+
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
-        eprintln!("resp: {:?}", resp);
         assert!(resp.is_ok())
     }
 
-    /*
-    #[bench]
-    fn bench_decode(b: &mut Bencher) {
+    #[test]
+    fn resp_schema_change_table() {
         let v = vec![
-            129, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115,
+            131, 0, 0, 0, 8, 0, 0, 0, 32, 0, 0, 0, 5, 0, 7, 67, 82, 69, 65, 84, 69, 68, 0, 5, 84,
+            65, 66, 76, 69, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116,
+        ];
+
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
+    }
+
+    #[test]
+    fn resp_result_void() {
+        let v = vec![131, 0, 0, 0, 8, 0, 0, 0, 4, 0, 0, 0, 1];
+
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
+    }
+
+    #[test]
+    fn resp_result_select() {
+        let v = vec![
+            131, 0, 0, 0, 8, 0, 0, 0, 59, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 4, 114, 117, 115,
             116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0,
             8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25,
         ];
-        b.bytes = v.len() as u64;
-        b.iter(|| {
-            let mut s = v.as_slice();
-            s.read_cql_response();
-        });
+
+        let mut s = v.as_slice();
+        let resp = s.read_cql_response();
+        assert!(resp.is_ok())
     }
-    */
 }
