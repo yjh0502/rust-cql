@@ -1,5 +1,4 @@
 extern crate byteorder;
-extern crate num;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::intrinsics::transmute;
@@ -104,6 +103,8 @@ pub enum ColumnType {
     List = 0x0020,
     Map = 0x0021,
     Set = 0x0022,
+    UDT = 0x0030,
+    Tuple = 0x0031,
     Unknown = 0xffff,
 }
 
@@ -131,6 +132,8 @@ fn column_type(val: u16) -> ColumnType {
         0x0020 => List,
         0x0021 => Map,
         0x0022 => Set,
+        0x0030 => UDT,
+        0x0031 => Tuple,
         _ => Unknown,
     }
 }
@@ -191,6 +194,16 @@ trait CqlReader: io::Read {
         Ok(val)
     }
 
+    fn read_int(&mut self) -> Result<i32> {
+        let val = self.read_i32::<BigEndian>()?;
+        Ok(val)
+    }
+
+    fn read_cql_str_len(&mut self, len: usize) -> Result<String> {
+        let bytes = self.read_bytes(len)?;
+        Ok(String::from_utf8(bytes)?)
+    }
+
     fn read_cql_str(&mut self) -> Result<String> {
         let len = self.read_short()?;
         let bytes = self.read_bytes(usize::from(len))?;
@@ -199,7 +212,7 @@ trait CqlReader: io::Read {
     }
 
     fn read_cql_long_str(&mut self) -> Result<Option<String>> {
-        match self.read_i32::<BigEndian>()? {
+        match self.read_int()? {
             -1 => Ok(None),
             len => {
                 let bytes = self.read_bytes(len as usize)?;
@@ -405,38 +418,67 @@ trait CqlReader: io::Read {
         let col = match col_type {
             //Custom => ,
             Ascii => Cql::CqlString(self.read_cql_long_str()?),
+            Bigint => Cql::CqlBigint(match self.read_int()? {
+                -1 => None,
+                8 => Some(self.read_i64::<BigEndian>()?),
+                _len => return Err(Error::Protocol),
+            }),
             //Blob => ,
-            Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
-            Boolean => Cql::CqlBool(match self.read_i32::<BigEndian>()? {
+            Boolean => Cql::CqlBool(match self.read_int()? {
                 -1 => None,
                 1 => Some(self.read_u8()? != 0),
                 _len => return Err(Error::Protocol),
             }),
-            VarChar => Cql::CqlString(self.read_cql_long_str()?),
-            Text => Cql::CqlString(self.read_cql_long_str()?),
-
-            Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
-                -1 => None,
-                4 => Some(self.read_i32::<BigEndian>()?),
-                _len => return Err(Error::Protocol),
+            //Counter => ,
+            //Decimal => ,
+            Double => Cql::Cqlf64(unsafe {
+                match self.read_int()? {
+                    -1 => None,
+                    8 => Some(transmute(self.read_u64::<BigEndian>()?)),
+                    _len => return Err(Error::Protocol),
+                }
             }),
             Float => Cql::Cqlf32(unsafe {
-                match self.read_i32::<BigEndian>()? {
+                match self.read_int()? {
                     -1 => None,
                     4 => Some(transmute(self.read_u32::<BigEndian>()?)),
                     _len => return Err(Error::Protocol),
                 }
             }),
-            Double => Cql::Cqlf64(unsafe {
-                match self.read_i32::<BigEndian>()? {
-                    -1 => None,
-                    4 => Some(transmute(self.read_u64::<BigEndian>()?)),
-                    _len => return Err(Error::Protocol),
-                }
+            Int => Cql::Cqli32(match self.read_int()? {
+                -1 => None,
+                4 => Some(self.read_int()?),
+                _len => return Err(Error::Protocol),
             }),
-
+            Text => Cql::CqlString(self.read_cql_long_str()?),
+            Timestamp => Cql::CqlTimestamp(match self.read_int()? {
+                -1 => None,
+                8 => Some(self.read_i64::<BigEndian>()?),
+                _len => return Err(Error::Protocol),
+            }),
+            UUID => Cql::CqlUUID(match self.read_int()? {
+                -1 => None,
+                16 => {
+                    let mut v = [0u8; 16];
+                    self.read_full(&mut v)?;
+                    Some(v)
+                }
+                _len => return Err(Error::Protocol),
+            }),
+            VarChar => Cql::CqlString(self.read_cql_long_str()?),
+            //Varint => ,
+            TimeUUID => Cql::CqlTimeUUID(match self.read_int()? {
+                -1 => None,
+                16 => {
+                    let mut v = [0u8; 16];
+                    self.read_full(&mut v)?;
+                    Some(v)
+                }
+                _len => return Err(Error::Protocol),
+            }),
+            //Inet => ,
             List => Cql::CqlList({
-                match self.read_i32::<BigEndian>()? {
+                match self.read_int()? {
                     -1 => None,
                     _ => {
                         //let data = self.read_bytes(len as usize);
@@ -444,19 +486,13 @@ trait CqlReader: io::Read {
                     }
                 }
             }),
+            //Map => ,
+            //Set => ,
 
-            //                    Counter => ,
-            //                    Decimal => ,
-            //                    Timestamp => ,
-            //                    UUID => ,
-            //                    Varint => ,
-            //                    TimeUUID => ,
-            //                    Inet => ,
-            //                    List => ,
-            //                    Map => ,
-            //                    Set => ,
+            //UDT => ,
+            //Tuple => ,
             _ => {
-                match self.read_i32::<BigEndian>()? {
+                match self.read_int()? {
                     -1 => (),
                     len => {
                         self.read_bytes(len as usize)?;
@@ -547,8 +583,10 @@ pub enum Cql {
     Cqlf32(Option<f32>),
     Cqlf64(Option<f64>),
 
-    CqlTimestamp(u64),
-    CqlBigint(num::BigInt),
+    CqlTimestamp(Option<i64>),
+    CqlUUID(Option<[u8; 16]>),
+    CqlTimeUUID(Option<[u8; 16]>),
+    CqlBigint(Option<i64>),
 
     CqlList(Option<Vec<Cql>>),
 
