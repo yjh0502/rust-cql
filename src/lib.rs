@@ -251,14 +251,15 @@ impl<'a, T: io::Read> CqlReader for T {
 
     fn read_cql_rows(&mut self) -> Result<Rows> {
         let metadata = Rc::new(self.read_cql_metadata()?);
-        Err(Error::UnexpectedEOF)
-        /*
         let rows_count = self.read_u32::<BigEndian>()?;
         let col_count = metadata.row_metadata.len();
 
-        let mut rows:Vec<Row> = Vec::with_capacity(rows_count as usize);
-        for _ in (0 .. rows_count) {
-            let mut row = Row{ cols: Vec::with_capacity(col_count), metadata: metadata.clone() };
+        let mut rows: Vec<Row> = Vec::with_capacity(rows_count as usize);
+        for _ in (0..rows_count) {
+            let mut row = Row {
+                cols: Vec::with_capacity(col_count),
+                metadata: metadata.clone(),
+            };
             for meta in metadata.row_metadata.iter() {
                 let col = match meta.col_type.clone() {
                     ColumnType::Ascii => Cql::CqlString(self.read_cql_long_str()?),
@@ -266,19 +267,19 @@ impl<'a, T: io::Read> CqlReader for T {
                     ColumnType::Text => Cql::CqlString(self.read_cql_long_str()?),
 
                     ColumnType::Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
-                            -1 => None,
-                            4 => Some(self.read_i32::<BigEndian>()?),
-                            len => panic!("Invalid length with i32: {}", len),
-                        }),
+                        -1 => None,
+                        4 => Some(self.read_i32::<BigEndian>()?),
+                        len => panic!("Invalid length with i32: {}", len),
+                    }),
                     ColumnType::Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
-                    ColumnType::Float => Cql::Cqlf32(unsafe{
+                    ColumnType::Float => Cql::Cqlf32(unsafe {
                         match self.read_i32::<BigEndian>()? {
                             -1 => None,
                             4 => Some(transmute(self.read_u32::<BigEndian>()?)),
                             len => panic!("Invalid length with f32: {}", len),
                         }
                     }),
-                    ColumnType::Double => Cql::Cqlf64(unsafe{
+                    ColumnType::Double => Cql::Cqlf64(unsafe {
                         match self.read_i32::<BigEndian>()? {
                             -1 => None,
                             4 => Some(transmute(self.read_u64::<BigEndian>()?)),
@@ -292,29 +293,29 @@ impl<'a, T: io::Read> CqlReader for T {
                             _ => {
                                 //let data = self.read_bytes(len as usize);
                                 panic!("List parse not implemented: {}");
-                            },
+                            }
                         }
                     }),
 
-
-//                    Custom => ,
-//                    Blob => ,
-//                    Boolean => ,
-//                    Counter => ,
-//                    Decimal => ,
-//                    Timestamp => ,
-//                    UUID => ,
-//                    Varint => ,
-//                    TimeUUID => ,
-//                    Inet => ,
-//                    List => ,
-//                    Map => ,
-//                    Set => ,
-
+                    //                    Custom => ,
+                    //                    Blob => ,
+                    //                    Boolean => ,
+                    //                    Counter => ,
+                    //                    Decimal => ,
+                    //                    Timestamp => ,
+                    //                    UUID => ,
+                    //                    Varint => ,
+                    //                    TimeUUID => ,
+                    //                    Inet => ,
+                    //                    List => ,
+                    //                    Map => ,
+                    //                    Set => ,
                     _ => {
                         match self.read_i32::<BigEndian>()? {
                             -1 => (),
-                            len => { self.read_bytes(len as usize)?; },
+                            len => {
+                                self.read_bytes(len as usize)?;
+                            }
                         }
                         Cql::CqlUnknown
                     }
@@ -329,18 +330,17 @@ impl<'a, T: io::Read> CqlReader for T {
             metadata: metadata,
             rows: rows,
         })
-        */
     }
 
     fn read_cql_response(&mut self) -> Result<Response> {
-        let header_data = self.read_bytes(8)?;
+        let header_data = self.read_bytes(4)?;
 
         let version = header_data[0];
         let flags = header_data[1];
         let stream = header_data[2] as i8;
         let opcode = opcode(header_data[3]);
-        let length = ((header_data[4] as u32) << 24u32) + ((header_data[5] as u32) << 16u32)
-            + ((header_data[6] as u32) << 8u32) + (header_data[7] as u32);
+        let length = self.read_u32::<BigEndian>()?;
+        eprintln!("len: {:?}, opcode: {:?}", length, opcode);
 
         let body_data = self.read_bytes(length as usize)?;
         let mut reader = io::Cursor::new(body_data.as_slice());
@@ -382,9 +382,10 @@ impl<'a, T: io::Read> CqlReader for T {
                 panic!("Invalid response from server");
             }
         };
+        eprintln!("body: {:?}", body);
 
-        if reader.position() != length as u64 {
-            panic!("short: {} != {}", reader.position(), length);
+        if reader.position() + 8 != length as u64 {
+            eprintln!("short: {} != {}", reader.position(), length);
         }
 
         Ok(Response {
@@ -394,9 +395,6 @@ impl<'a, T: io::Read> CqlReader for T {
             opcode: opcode,
             body: body,
         })
-        /*
-        Err(Error::UnexpectedEOF)
-        */
     }
 }
 
@@ -717,6 +715,7 @@ mod tests {
         ];
         let mut s = v.as_slice();
         let resp = s.read_cql_response();
+        eprintln!("resp: {:?}", resp);
         assert!(resp.is_ok())
     }
 
