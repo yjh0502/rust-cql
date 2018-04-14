@@ -160,6 +160,16 @@ impl From<FromUtf8Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+fn parse_varint(v: &[u8]) -> i64 {
+    let start = 8 - v.len();
+    let is_positive = (v[0] & 0x80) == 0;
+    let mut buf = if is_positive { [0u8; 8] } else { [255u8; 8] };
+
+    buf[start..].copy_from_slice(v);
+    let mut slice: &[u8] = &buf;
+    slice.read_i64::<BigEndian>().unwrap()
+}
+
 trait CqlSerializable {
     fn len(&self) -> usize;
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()>;
@@ -428,6 +438,15 @@ trait CqlReader: io::Read {
         })
     }
 
+    fn read_cql_varint(&mut self, len: usize) -> Result<i64> {
+        let v = self.read_bytes(len)?;
+        if v.len() > 10 {
+            //TODO: add bigint?
+            return Err(Error::Protocol);
+        }
+        Ok(parse_varint(&v))
+    }
+
     fn read_cql_col_ty(&mut self, col_type: ColumnType, len: usize) -> Result<Value> {
         use ColumnType::*;
         use Value::*;
@@ -447,8 +466,11 @@ trait CqlReader: io::Read {
             }),
             //TODO
             //Counter => ,
-            //TODO
-            //Decimal => ,
+            Decimal => {
+                let scale = self.read_int()?;
+                let unscaled = self.read_cql_varint(len)?;
+                CqlDecimal(scale, unscaled)
+            }
             Double => Cqlf64(unsafe {
                 match len {
                     8 => transmute(self.read_u64::<BigEndian>()?),
@@ -479,8 +501,7 @@ trait CqlReader: io::Read {
                 _len => return Err(Error::Protocol),
             }),
             VarChar => CqlString(self.read_cql_str_len(len)?),
-            //TODO
-            //Varint => ,
+            Varint => Cqli64(self.read_cql_varint(len)?),
             TimeUUID => CqlTimeUUID(match len {
                 16 => {
                     let mut v = [0u8; 16];
@@ -506,7 +527,7 @@ trait CqlReader: io::Read {
                 unreachable!("non-singular type on read_cql_col_ty: {:?}", col_type);
             }
             _ => {
-                self.read_bytes(len as usize)?;
+                self.read_bytes(len)?;
                 CqlUnknown
             }
         };
@@ -644,6 +665,7 @@ pub enum Value {
     CqlBool(bool),
 
     CqlCounter(u64),
+    CqlDecimal(i32, i64),
 
     Cqlf32(f32),
     Cqlf64(f64),
@@ -900,7 +922,20 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::CqlReader;
+    use super::*;
+
+    #[test]
+    fn test_parse_varint() {
+        assert_eq!(0, parse_varint(&[0]));
+        assert_eq!(1, parse_varint(&[1]));
+        assert_eq!(127, parse_varint(&[0x7f]));
+        assert_eq!(128, parse_varint(&[0x00, 0x80]));
+        assert_eq!(129, parse_varint(&[0x00, 0x81]));
+
+        assert_eq!(-1, parse_varint(&[0xff]));
+        assert_eq!(-128, parse_varint(&[0x80]));
+        assert_eq!(-129, parse_varint(&[0xff, 0x7f]));
+    }
 
     #[test]
     fn resp_ready() {
