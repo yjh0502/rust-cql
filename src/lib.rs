@@ -403,8 +403,15 @@ trait CqlReader: io::Read {
         use ColumnType::*;
 
         let col = match col_type {
+            //Custom => ,
             Ascii => Cql::CqlString(self.read_cql_long_str()?),
+            //Blob => ,
             Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
+            Boolean => Cql::CqlBool(match self.read_i32::<BigEndian>()? {
+                -1 => None,
+                1 => Some(self.read_u8()? != 0),
+                _len => return Err(Error::Protocol),
+            }),
             VarChar => Cql::CqlString(self.read_cql_long_str()?),
             Text => Cql::CqlString(self.read_cql_long_str()?),
 
@@ -438,9 +445,6 @@ trait CqlReader: io::Read {
                 }
             }),
 
-            //                    Custom => ,
-            //                    Blob => ,
-            //                    Boolean => ,
             //                    Counter => ,
             //                    Decimal => ,
             //                    Timestamp => ,
