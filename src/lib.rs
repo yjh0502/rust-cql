@@ -163,95 +163,20 @@ trait CqlSerializable {
 }
 
 trait CqlReader: io::Read {
-    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>>;
-    fn read_cql_str(&mut self) -> Result<String>;
-    fn read_cql_long_str(&mut self) -> Result<Option<String>>;
-    fn read_cql_rows(&mut self) -> Result<Rows>;
-
-    fn read_cql_metadata(&mut self) -> Result<Metadata>;
-    fn read_cql_response(&mut self) -> Result<Response>;
-
-    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Cql> {
-        use ColumnType::*;
-
-        let col = match col_type {
-            Ascii => Cql::CqlString(self.read_cql_long_str()?),
-            Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
-            VarChar => Cql::CqlString(self.read_cql_long_str()?),
-            Text => Cql::CqlString(self.read_cql_long_str()?),
-
-            Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
-                -1 => None,
-                4 => Some(self.read_i32::<BigEndian>()?),
-                _len => return Err(Error::Protocol),
-            }),
-            Float => Cql::Cqlf32(unsafe {
-                match self.read_i32::<BigEndian>()? {
-                    -1 => None,
-                    4 => Some(transmute(self.read_u32::<BigEndian>()?)),
-                    _len => return Err(Error::Protocol),
-                }
-            }),
-            Double => Cql::Cqlf64(unsafe {
-                match self.read_i32::<BigEndian>()? {
-                    -1 => None,
-                    4 => Some(transmute(self.read_u64::<BigEndian>()?)),
-                    _len => return Err(Error::Protocol),
-                }
-            }),
-
-            List => Cql::CqlList({
-                match self.read_i32::<BigEndian>()? {
-                    -1 => None,
-                    _ => {
-                        //let data = self.read_bytes(len as usize);
-                        panic!("List parse not implemented: {}");
-                    }
-                }
-            }),
-
-            //                    Custom => ,
-            //                    Blob => ,
-            //                    Boolean => ,
-            //                    Counter => ,
-            //                    Decimal => ,
-            //                    Timestamp => ,
-            //                    UUID => ,
-            //                    Varint => ,
-            //                    TimeUUID => ,
-            //                    Inet => ,
-            //                    List => ,
-            //                    Map => ,
-            //                    Set => ,
-            _ => {
-                match self.read_i32::<BigEndian>()? {
-                    -1 => (),
-                    len => {
-                        self.read_bytes(len as usize)?;
-                    }
-                }
-                Cql::CqlUnknown
+    fn read_full(&mut self, buf: &mut [u8]) -> Result<()> {
+        let mut nread = 0usize;
+        while nread < buf.len() {
+            match self.read(&mut buf[nread..])? {
+                0 => return Err(Error::UnexpectedEOF),
+                n => nread += n,
             }
-        };
-        Ok(col)
-    }
-}
-
-fn read_full<R: io::Read>(rdr: &mut R, buf: &mut [u8]) -> Result<()> {
-    let mut nread = 0usize;
-    while nread < buf.len() {
-        match rdr.read(&mut buf[nread..])? {
-            0 => return Err(Error::UnexpectedEOF),
-            n => nread += n,
         }
+        Ok(())
     }
-    Ok(())
-}
 
-impl<'a, T: io::Read> CqlReader for T {
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
         let mut vec = vec![0; len];
-        read_full(self, vec.as_mut_slice())?;
+        self.read_full(vec.as_mut_slice())?;
         Ok(vec)
     }
 
@@ -433,7 +358,74 @@ impl<'a, T: io::Read> CqlReader for T {
             body: body,
         })
     }
+
+    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Cql> {
+        use ColumnType::*;
+
+        let col = match col_type {
+            Ascii => Cql::CqlString(self.read_cql_long_str()?),
+            Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
+            VarChar => Cql::CqlString(self.read_cql_long_str()?),
+            Text => Cql::CqlString(self.read_cql_long_str()?),
+
+            Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
+                -1 => None,
+                4 => Some(self.read_i32::<BigEndian>()?),
+                _len => return Err(Error::Protocol),
+            }),
+            Float => Cql::Cqlf32(unsafe {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    4 => Some(transmute(self.read_u32::<BigEndian>()?)),
+                    _len => return Err(Error::Protocol),
+                }
+            }),
+            Double => Cql::Cqlf64(unsafe {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    4 => Some(transmute(self.read_u64::<BigEndian>()?)),
+                    _len => return Err(Error::Protocol),
+                }
+            }),
+
+            List => Cql::CqlList({
+                match self.read_i32::<BigEndian>()? {
+                    -1 => None,
+                    _ => {
+                        //let data = self.read_bytes(len as usize);
+                        panic!("List parse not implemented: {}");
+                    }
+                }
+            }),
+
+            //                    Custom => ,
+            //                    Blob => ,
+            //                    Boolean => ,
+            //                    Counter => ,
+            //                    Decimal => ,
+            //                    Timestamp => ,
+            //                    UUID => ,
+            //                    Varint => ,
+            //                    TimeUUID => ,
+            //                    Inet => ,
+            //                    List => ,
+            //                    Map => ,
+            //                    Set => ,
+            _ => {
+                match self.read_i32::<BigEndian>()? {
+                    -1 => (),
+                    len => {
+                        self.read_bytes(len as usize)?;
+                    }
+                }
+                Cql::CqlUnknown
+            }
+        };
+        Ok(col)
+    }
 }
+
+impl<'a, T: io::Read> CqlReader for T {}
 
 #[derive(Debug)]
 struct Pair {
