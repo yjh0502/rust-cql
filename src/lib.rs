@@ -186,9 +186,14 @@ trait CqlReader: io::Read {
         Ok(vec)
     }
 
+    fn read_short(&mut self) -> Result<u16> {
+        let val = self.read_u16::<BigEndian>()?;
+        Ok(val)
+    }
+
     fn read_cql_str(&mut self) -> Result<String> {
-        let len = self.read_u16::<BigEndian>()?;
-        let bytes = self.read_bytes(len as usize)?;
+        let len = self.read_short()?;
+        let bytes = self.read_bytes(usize::from(len))?;
         let s = String::from_utf8(bytes)?;
         Ok(s)
     }
@@ -202,6 +207,26 @@ trait CqlReader: io::Read {
                 Ok(Some(s))
             }
         }
+    }
+
+    fn read_cql_string_list(&mut self) -> Result<Vec<String>> {
+        let len = self.read_short()?;
+        let mut v = Vec::with_capacity(usize::from(len));
+        for _ in 0..len {
+            v.push(self.read_cql_str()?);
+        }
+        Ok(v)
+    }
+
+    fn read_cql_string_multimap(&mut self) -> Result<StringMultiMap> {
+        let len = self.read_short()?;
+        let mut v = Vec::with_capacity(usize::from(len));
+        for _ in 0..len {
+            let key = self.read_cql_str()?;
+            let values = self.read_cql_string_list()?;
+            v.push((key, values));
+        }
+        Ok(v)
     }
 
     fn read_cql_metadata(&mut self) -> Result<Metadata> {
@@ -225,9 +250,9 @@ trait CqlReader: io::Read {
                 (Some(keyspace_str), Some(table_str))
             };
             let col_name = self.read_cql_str()?;
-            let type_key = self.read_u16::<BigEndian>()?;
+            let type_key = self.read_short()?;
             let type_name = if type_key >= 0x20 {
-                column_type(self.read_u16::<BigEndian>()?)
+                column_type(self.read_short()?)
             } else {
                 ColumnType::Unknown
             };
@@ -341,6 +366,10 @@ trait CqlReader: io::Read {
                         panic!("Unknown code for result: {}", code);
                     }
                 }
+            }
+            Opcode::Supported => {
+                let body = reader.read_cql_string_multimap()?;
+                ResponseBody::Supported(body)
             }
             _ => {
                 panic!("unknown response from server");
@@ -582,11 +611,14 @@ impl CqlSerializable for BodyEmpty {
     }
 }
 
+type StringMultiMap = Vec<(String, Vec<String>)>;
+
 #[derive(Debug)]
 pub enum ResponseBody {
     Error(u32, String),
     Ready,
     Auth(String),
+    Supported(StringMultiMap),
 
     Void,
     Rows(Rows),

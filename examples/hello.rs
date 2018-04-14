@@ -5,12 +5,15 @@ fn run() -> cql::Result<()> {
 
     eprintln!("ready");
 
+    let res = client.options();
+    println!("options: {:?}", res);
+
     let res = client.query(
         "create keyspace rust with replication = \
          {'class': 'SimpleStrategy', 'replication_factor':1}",
         cql::Consistency::One,
     )?;
-    println!("response: {:?}", res);
+    println!("create: {:?}", res);
 
     let res = client.query(
         "create table rust.test (id text primary key, value float)",
