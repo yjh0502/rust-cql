@@ -4,7 +4,7 @@ extern crate num;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::intrinsics::transmute;
 use std::io;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::rc::Rc;
 use std::string::FromUtf8Error;
@@ -18,8 +18,10 @@ enum OpcodeReq {
     Cred = 0x04,
     Opts = 0x05,
     Query = 0x07,
+    /*
     Prepare = 0x09,
     Register = 0x0B,
+    */
 }
 
 #[derive(Debug)]
@@ -35,21 +37,24 @@ enum OpcodeResp {
 }
 
 fn opcode(val: u8) -> OpcodeResp {
+    use OpcodeResp::*;
     match val {
-        //        0x01 => Startup,
-        //        0x04 => Cred,
-        //        0x05 => Opts,
-        //        0x07 => Query,
-        //        0x09 => Prepare,
-        //        0x0B => Register,
-        0x00 => OpcodeResp::Error,
-        0x02 => OpcodeResp::Ready,
-        0x03 => OpcodeResp::Auth,
-        0x06 => OpcodeResp::Supported,
-        0x08 => OpcodeResp::Result,
-        0x0A => OpcodeResp::Exec,
-        0x0C => OpcodeResp::Event,
-        _ => OpcodeResp::Error,
+        /*
+        0x01 => Startup,
+        0x04 => Cred,
+        0x05 => Opts,
+        0x07 => Query,
+        0x09 => Prepare,
+        0x0B => Register,
+        */
+        0x00 => Error,
+        0x02 => Ready,
+        0x03 => Auth,
+        0x06 => Supported,
+        0x08 => Result,
+        0x0A => Exec,
+        0x0C => Event,
+        _ => Error,
     }
 }
 
@@ -256,7 +261,7 @@ impl<'a, T: io::Read> CqlReader for T {
         let col_count = metadata.row_metadata.len();
 
         let mut rows: Vec<Row> = Vec::with_capacity(rows_count as usize);
-        for _ in (0..rows_count) {
+        for _ in 0..rows_count {
             let mut row = Row {
                 cols: Vec::with_capacity(col_count),
                 metadata: metadata.clone(),
@@ -615,6 +620,7 @@ fn startup() -> Request {
     };
 }
 
+#[allow(unused)]
 fn auth(creds: Vec<Vec<u8>>) -> Request {
     return Request {
         version: CQL_VERSION,
@@ -625,6 +631,7 @@ fn auth(creds: Vec<Vec<u8>>) -> Request {
     };
 }
 
+#[allow(unused)]
 fn options() -> Request {
     return Request {
         version: CQL_VERSION,
