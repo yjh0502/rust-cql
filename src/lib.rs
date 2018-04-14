@@ -211,17 +211,6 @@ trait CqlReader: io::Read {
         Ok(s)
     }
 
-    fn read_cql_long_str(&mut self) -> Result<Option<String>> {
-        match self.read_int()? {
-            -1 => Ok(None),
-            len => {
-                let bytes = self.read_bytes(len as usize)?;
-                let s = String::from_utf8(bytes)?;
-                Ok(Some(s))
-            }
-        }
-    }
-
     fn read_cql_string_list(&mut self) -> Result<Vec<String>> {
         let len = self.read_short()?;
         let mut v = Vec::with_capacity(usize::from(len));
@@ -416,89 +405,76 @@ trait CqlReader: io::Read {
         use ColumnType::*;
         use Value::*;
 
+        let len = match self.read_int()? {
+            -1 => return Ok(Value::CqlNull),
+            len => len as usize,
+        };
+
         let col = match col_type {
             //Custom => ,
-            Ascii => CqlString(self.read_cql_long_str()?),
-            Bigint => CqlBigint(match self.read_int()? {
-                -1 => None,
-                8 => Some(self.read_i64::<BigEndian>()?),
+            Ascii => CqlString(self.read_cql_str_len(len)?),
+            Bigint => CqlBigint(match len {
+                8 => self.read_i64::<BigEndian>()?,
                 _len => return Err(Error::Protocol),
             }),
             //Blob => ,
-            Boolean => CqlBool(match self.read_int()? {
-                -1 => None,
-                1 => Some(self.read_u8()? != 0),
+            Boolean => CqlBool(match len {
+                1 => self.read_u8()? != 0,
                 _len => return Err(Error::Protocol),
             }),
             //Counter => ,
             //Decimal => ,
             Double => Cqlf64(unsafe {
-                match self.read_int()? {
-                    -1 => None,
-                    8 => Some(transmute(self.read_u64::<BigEndian>()?)),
+                match len {
+                    8 => transmute(self.read_u64::<BigEndian>()?),
                     _len => return Err(Error::Protocol),
                 }
             }),
             Float => Cqlf32(unsafe {
-                match self.read_int()? {
-                    -1 => None,
-                    4 => Some(transmute(self.read_u32::<BigEndian>()?)),
+                match len {
+                    4 => transmute(self.read_u32::<BigEndian>()?),
                     _len => return Err(Error::Protocol),
                 }
             }),
-            Int => Cqli32(match self.read_int()? {
-                -1 => None,
-                4 => Some(self.read_int()?),
+            Int => Cqli32(match len {
+                4 => self.read_int()?,
                 _len => return Err(Error::Protocol),
             }),
-            Text => CqlString(self.read_cql_long_str()?),
-            Timestamp => CqlTimestamp(match self.read_int()? {
-                -1 => None,
-                8 => Some(self.read_i64::<BigEndian>()?),
+            Text => CqlString(self.read_cql_str_len(len)?),
+            Timestamp => CqlTimestamp(match len {
+                8 => self.read_i64::<BigEndian>()?,
                 _len => return Err(Error::Protocol),
             }),
-            UUID => CqlUUID(match self.read_int()? {
-                -1 => None,
+            UUID => CqlUUID(match len {
                 16 => {
                     let mut v = [0u8; 16];
                     self.read_full(&mut v)?;
-                    Some(v)
+                    v
                 }
                 _len => return Err(Error::Protocol),
             }),
-            VarChar => CqlString(self.read_cql_long_str()?),
+            VarChar => CqlString(self.read_cql_str_len(len)?),
             //Varint => ,
-            TimeUUID => CqlTimeUUID(match self.read_int()? {
-                -1 => None,
+            TimeUUID => CqlTimeUUID(match len {
                 16 => {
                     let mut v = [0u8; 16];
                     self.read_full(&mut v)?;
-                    Some(v)
+                    v
                 }
                 _len => return Err(Error::Protocol),
             }),
             //Inet => ,
-            List => CqlList({
-                match self.read_int()? {
-                    -1 => None,
-                    _ => {
-                        //let data = self.read_bytes(len as usize);
-                        panic!("List parse not implemented: {}");
-                    }
-                }
-            }),
+            List => {
+                //let data = self.read_bytes(len as usize);
+                panic!("List parse not implemented: {}");
+            }
             //Map => ,
             //Set => ,
 
             //UDT => ,
             //Tuple => ,
             _ => {
-                match self.read_int()? {
-                    -1 => (),
-                    len => {
-                        self.read_bytes(len as usize)?;
-                    }
-                }
+                self.read_bytes(len as usize)?;
                 CqlUnknown
             }
         };
@@ -571,26 +547,27 @@ pub struct Metadata {
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    CqlString(Option<String>),
+    CqlString(String),
 
-    Cqli32(Option<i32>),
-    Cqli64(Option<i64>),
+    Cqli32(i32),
+    Cqli64(i64),
 
-    CqlBlob(Option<Vec<u8>>),
-    CqlBool(Option<bool>),
+    CqlBlob(Vec<u8>),
+    CqlBool(bool),
 
-    CqlCounter(Option<u64>),
+    CqlCounter(u64),
 
-    Cqlf32(Option<f32>),
-    Cqlf64(Option<f64>),
+    Cqlf32(f32),
+    Cqlf64(f64),
 
-    CqlTimestamp(Option<i64>),
-    CqlUUID(Option<[u8; 16]>),
-    CqlTimeUUID(Option<[u8; 16]>),
-    CqlBigint(Option<i64>),
+    CqlTimestamp(i64),
+    CqlUUID([u8; 16]),
+    CqlTimeUUID([u8; 16]),
+    CqlBigint(i64),
 
-    CqlList(Option<Vec<Value>>),
+    CqlList(Vec<Value>),
 
+    CqlNull,
     CqlUnknown,
 }
 
@@ -837,8 +814,7 @@ mod tests {
     #[test]
     fn resp_ready() {
         let v = vec![131, 0, 0, 1, 2, 0, 0, 0, 0];
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 
@@ -849,8 +825,7 @@ mod tests {
             100, 100, 32, 101, 120, 105, 115, 116, 105, 110, 103, 32, 107, 101, 121, 115, 112, 97,
             99, 101, 32, 34, 114, 117, 115, 116, 34, 0, 4, 114, 117, 115, 116, 0, 0,
         ];
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 
@@ -860,9 +835,7 @@ mod tests {
             131, 0, 0, 0, 8, 0, 0, 0, 29, 0, 0, 0, 5, 0, 7, 67, 82, 69, 65, 84, 69, 68, 0, 8, 75,
             69, 89, 83, 80, 65, 67, 69, 0, 4, 114, 117, 115, 116,
         ];
-
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 
@@ -872,18 +845,14 @@ mod tests {
             131, 0, 0, 0, 8, 0, 0, 0, 32, 0, 0, 0, 5, 0, 7, 67, 82, 69, 65, 84, 69, 68, 0, 5, 84,
             65, 66, 76, 69, 0, 4, 114, 117, 115, 116, 0, 4, 116, 101, 115, 116,
         ];
-
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 
     #[test]
     fn resp_result_void() {
         let v = vec![131, 0, 0, 0, 8, 0, 0, 0, 4, 0, 0, 0, 1];
-
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 
@@ -894,9 +863,7 @@ mod tests {
             116, 0, 4, 116, 101, 115, 116, 0, 2, 105, 100, 0, 13, 0, 5, 118, 97, 108, 117, 101, 0,
             8, 0, 0, 0, 1, 0, 0, 0, 4, 97, 115, 100, 102, 0, 0, 0, 4, 63, 158, 4, 25,
         ];
-
-        let mut s = v.as_slice();
-        let resp = s.read_cql_response();
+        let resp = v.as_slice().read_cql_response();
         assert!(resp.is_ok())
     }
 }
