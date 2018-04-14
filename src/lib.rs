@@ -231,6 +231,50 @@ trait CqlReader: io::Read {
         Ok(v)
     }
 
+    fn read_cql_col_type(&mut self) -> Result<CqlColDescr> {
+        let type_key = column_type(self.read_short()?);
+        let ty = match type_key {
+            ColumnType::List => {
+                let ty = self.read_cql_col_type()?;
+                CqlColDescr::List(Box::new(ty))
+            }
+            ColumnType::Map => {
+                let key_ty = self.read_cql_col_type()?;
+                let val_ty = self.read_cql_col_type()?;
+                CqlColDescr::Map(Box::new((key_ty, val_ty)))
+            }
+            ColumnType::Tuple => {
+                let n = self.read_short()?;
+                let mut ty_list = Vec::with_capacity(usize::from(n));
+                for _ in 0..n {
+                    ty_list.push(self.read_cql_col_type()?);
+                }
+                CqlColDescr::Tuple(ty_list)
+            }
+            ty => CqlColDescr::Single(ty),
+        };
+        Ok(ty)
+    }
+
+    fn read_cql_col_metadata(&mut self, flags: u32) -> Result<CqlColMetadata> {
+        let (keyspace, table) = if flags == 0x0001 {
+            (None, None)
+        } else {
+            let keyspace_str = self.read_cql_str()?;
+            let table_str = self.read_cql_str()?;
+            (Some(keyspace_str), Some(table_str))
+        };
+        let col_name = self.read_cql_str()?;
+        let col_type = self.read_cql_col_type()?;
+
+        Ok(CqlColMetadata {
+            keyspace,
+            table,
+            col_name,
+            col_type,
+        })
+    }
+
     fn read_cql_metadata(&mut self) -> Result<Metadata> {
         let flags = self.read_u32::<BigEndian>()?;
         let column_count = self.read_u32::<BigEndian>()?;
@@ -242,30 +286,9 @@ trait CqlReader: io::Read {
             (None, None)
         };
 
-        let mut row_metadata: Vec<CqlColMetadata> = Vec::with_capacity(column_count as usize);
+        let mut row_metadata = Vec::with_capacity(column_count as usize);
         for _ in 0..column_count {
-            let (keyspace, table) = if flags == 0x0001 {
-                (None, None)
-            } else {
-                let keyspace_str = self.read_cql_str()?;
-                let table_str = self.read_cql_str()?;
-                (Some(keyspace_str), Some(table_str))
-            };
-            let col_name = self.read_cql_str()?;
-            let type_key = self.read_short()?;
-            let type_name = if type_key >= 0x20 {
-                column_type(self.read_short()?)
-            } else {
-                ColumnType::Unknown
-            };
-
-            row_metadata.push(CqlColMetadata {
-                keyspace: keyspace,
-                table: table,
-                col_name: col_name,
-                col_type: column_type(type_key),
-                col_type_name: type_name,
-            });
+            row_metadata.push(self.read_cql_col_metadata(flags)?);
         }
 
         Ok(Metadata {
@@ -287,7 +310,7 @@ trait CqlReader: io::Read {
             let mut cols = Vec::with_capacity(col_count);
 
             for meta in metadata.row_metadata.iter() {
-                cols.push(self.read_cql_col(meta.col_type)?);
+                cols.push(self.read_cql_col(&meta.col_type)?);
             }
 
             rows.push(Row {
@@ -401,14 +424,11 @@ trait CqlReader: io::Read {
         })
     }
 
-    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Value> {
+    fn read_cql_col_ty(&mut self, col_type: ColumnType, len: usize) -> Result<Value> {
         use ColumnType::*;
         use Value::*;
 
-        let len = match self.read_int()? {
-            -1 => return Ok(Value::CqlNull),
-            len => len as usize,
-        };
+        eprintln!("ty: {:?}, len: {:?}", col_type, len);
 
         let col = match col_type {
             //Custom => ,
@@ -417,7 +437,7 @@ trait CqlReader: io::Read {
                 8 => self.read_i64::<BigEndian>()?,
                 _len => return Err(Error::Protocol),
             }),
-            //Blob => ,
+            Blob => CqlBlob(self.read_bytes(len)?),
             Boolean => CqlBool(match len {
                 1 => self.read_u8()? != 0,
                 _len => return Err(Error::Protocol),
@@ -464,21 +484,56 @@ trait CqlReader: io::Read {
                 _len => return Err(Error::Protocol),
             }),
             //Inet => ,
-            List => {
-                //let data = self.read_bytes(len as usize);
-                panic!("List parse not implemented: {}");
+            List | Map | Set | UDT | Tuple => {
+                unreachable!("non-singular type on read_cql_col_ty: {:?}", col_type);
             }
-            //Map => ,
-            //Set => ,
-
-            //UDT => ,
-            //Tuple => ,
             _ => {
                 self.read_bytes(len as usize)?;
                 CqlUnknown
             }
         };
         Ok(col)
+    }
+
+    fn read_cql_col(&mut self, col_type: &CqlColDescr) -> Result<Value> {
+        let len = match self.read_int()? {
+            -1 => return Ok(Value::CqlNull),
+            len => len as usize,
+        };
+
+        match *col_type {
+            CqlColDescr::Single(ty) => self.read_cql_col_ty(ty, len),
+            CqlColDescr::List(ref ty) => {
+                let n = self.read_int()? as usize;
+                let mut l = Vec::with_capacity(n);
+                for _ in 0..n {
+                    l.push(self.read_cql_col(ty)?);
+                }
+                Ok(Value::CqlList(l))
+            }
+            CqlColDescr::Map(ref ty_tup) => {
+                let n = self.read_int()? as usize;
+                let mut l = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let key = self.read_cql_col(&ty_tup.0)?;
+                    let val = self.read_cql_col(&ty_tup.1)?;
+                    l.push((key, val));
+                }
+                Ok(Value::CqlMap(l))
+            }
+            CqlColDescr::Tuple(ref ty_list) => {
+                let n = self.read_int()? as usize;
+                let mut l = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut row = Vec::with_capacity(ty_list.len());
+                    for ty in ty_list.iter() {
+                        row.push(self.read_cql_col(ty)?);
+                    }
+                    l.push(row)
+                }
+                Ok(Value::CqlTuple(l))
+            }
+        }
     }
 }
 
@@ -532,8 +587,16 @@ struct CqlColMetadata {
     keyspace: Option<String>,
     table: Option<String>,
     col_name: String,
-    col_type: ColumnType,
-    col_type_name: ColumnType,
+    col_type: CqlColDescr,
+}
+
+#[derive(Debug)]
+enum CqlColDescr {
+    Single(ColumnType),
+    List(Box<CqlColDescr>),
+    Map(Box<(CqlColDescr, CqlColDescr)>),
+    //UDT,
+    Tuple(Vec<CqlColDescr>),
 }
 
 #[derive(Debug)]
@@ -566,6 +629,8 @@ pub enum Value {
     CqlBigint(i64),
 
     CqlList(Vec<Value>),
+    CqlMap(Vec<(Value, Value)>),
+    CqlTuple(Vec<Vec<Value>>),
 
     CqlNull,
     CqlUnknown,
