@@ -12,20 +12,16 @@ use std::string::FromUtf8Error;
 pub static CQL_VERSION: u8 = 0x03;
 
 #[derive(Clone, Debug)]
-enum OpcodeReq {
+enum Opcode {
     //requests
     Startup = 0x01,
-    Cred = 0x04,
+    // Cred = 0x04,
     Opts = 0x05,
     Query = 0x07,
-    /*
-    Prepare = 0x09,
-    Register = 0x0B,
-    */
-}
+    //TODO
+    // Prepare = 0x09,
+    // Register = 0x0B,
 
-#[derive(Debug)]
-enum OpcodeResp {
     //responces
     Error = 0x00,
     Ready = 0x02,
@@ -36,9 +32,10 @@ enum OpcodeResp {
     Event = 0x0C,
 }
 
-fn opcode(val: u8) -> OpcodeResp {
-    use OpcodeResp::*;
+fn opcode(val: u8) -> Opcode {
+    use Opcode::*;
     match val {
+        //TODO
         /*
         0x01 => Startup,
         0x04 => Cred,
@@ -72,16 +69,17 @@ pub enum Consistency {
 }
 
 pub fn consistency(val: u16) -> Consistency {
+    use Consistency::*;
     match val {
-        0 => Consistency::Any,
-        1 => Consistency::One,
-        2 => Consistency::Two,
-        3 => Consistency::Three,
-        4 => Consistency::Quorum,
-        5 => Consistency::All,
-        6 => Consistency::LocalQuorum,
-        7 => Consistency::EachQuorum,
-        _ => Consistency::Unknown,
+        0 => Any,
+        1 => One,
+        2 => Two,
+        3 => Three,
+        4 => Quorum,
+        5 => All,
+        6 => LocalQuorum,
+        7 => EachQuorum,
+        _ => Unknown,
     }
 }
 
@@ -111,28 +109,30 @@ pub enum ColumnType {
 }
 
 fn column_type(val: u16) -> ColumnType {
+    use ColumnType::*;
+
     match val {
-        0x0000 => ColumnType::Custom,
-        0x0001 => ColumnType::Ascii,
-        0x0002 => ColumnType::Bigint,
-        0x0003 => ColumnType::Blob,
-        0x0004 => ColumnType::Boolean,
-        0x0005 => ColumnType::Counter,
-        0x0006 => ColumnType::Decimal,
-        0x0007 => ColumnType::Double,
-        0x0008 => ColumnType::Float,
-        0x0009 => ColumnType::Int,
-        0x000A => ColumnType::Text,
-        0x000B => ColumnType::Timestamp,
-        0x000C => ColumnType::UUID,
-        0x000D => ColumnType::VarChar,
-        0x000E => ColumnType::Varint,
-        0x000F => ColumnType::TimeUUID,
-        0x0010 => ColumnType::Inet,
-        0x0020 => ColumnType::List,
-        0x0021 => ColumnType::Map,
-        0x0022 => ColumnType::Set,
-        _ => ColumnType::Unknown,
+        0x0000 => Custom,
+        0x0001 => Ascii,
+        0x0002 => Bigint,
+        0x0003 => Blob,
+        0x0004 => Boolean,
+        0x0005 => Counter,
+        0x0006 => Decimal,
+        0x0007 => Double,
+        0x0008 => Float,
+        0x0009 => Int,
+        0x000A => Text,
+        0x000B => Timestamp,
+        0x000C => UUID,
+        0x000D => VarChar,
+        0x000E => Varint,
+        0x000F => TimeUUID,
+        0x0010 => Inet,
+        0x0020 => List,
+        0x0021 => Map,
+        0x0022 => Set,
+        _ => Unknown,
     }
 }
 
@@ -275,21 +275,21 @@ impl<'a, T: io::Read> CqlReader for T {
                     ColumnType::Int => Cql::Cqli32(match self.read_i32::<BigEndian>()? {
                         -1 => None,
                         4 => Some(self.read_i32::<BigEndian>()?),
-                        len => panic!("Invalid length with i32: {}", len),
+                        _len => return Err(Error::Protocol),
                     }),
                     ColumnType::Bigint => Cql::Cqli64(Some(self.read_i64::<BigEndian>()?)),
                     ColumnType::Float => Cql::Cqlf32(unsafe {
                         match self.read_i32::<BigEndian>()? {
                             -1 => None,
                             4 => Some(transmute(self.read_u32::<BigEndian>()?)),
-                            len => panic!("Invalid length with f32: {}", len),
+                            _len => return Err(Error::Protocol),
                         }
                     }),
                     ColumnType::Double => Cql::Cqlf64(unsafe {
                         match self.read_i32::<BigEndian>()? {
                             -1 => None,
                             4 => Some(transmute(self.read_u64::<BigEndian>()?)),
-                            len => panic!("Invalid length with f64: {}", len),
+                            _len => return Err(Error::Protocol),
                         }
                     }),
 
@@ -354,9 +354,9 @@ impl<'a, T: io::Read> CqlReader for T {
         let mut reader = io::Cursor::new(body_data.as_slice());
 
         let body = match opcode {
-            OpcodeResp::Ready => ResponseBody::Ready,
-            OpcodeResp::Auth => ResponseBody::Auth(reader.read_cql_str()?),
-            OpcodeResp::Error => {
+            Opcode::Ready => ResponseBody::Ready,
+            Opcode::Auth => ResponseBody::Auth(reader.read_cql_str()?),
+            Opcode::Error => {
                 let code = reader.read_u32::<BigEndian>()?;
                 let msg = reader.read_cql_str()?;
 
@@ -369,7 +369,7 @@ impl<'a, T: io::Read> CqlReader for T {
                 }
                 ResponseBody::Error(code, msg)
             }
-            OpcodeResp::Result => {
+            Opcode::Result => {
                 let code = reader.read_u32::<BigEndian>()?;
                 match code {
                     0x0001 => ResponseBody::Void,
@@ -418,10 +418,12 @@ impl<'a, T: io::Read> CqlReader for T {
         }
 
         Ok(Response {
-            version: version,
-            flags: flags,
-            stream: stream,
-            opcode: opcode,
+            header: FrameHeader {
+                version,
+                flags,
+                stream,
+                opcode,
+            },
             body: body,
         })
     }
@@ -558,29 +560,43 @@ pub enum ResponseBody {
 }
 
 #[derive(Debug)]
-struct Request {
+pub struct FrameHeader {
     version: u8,
     flags: u8,
     stream: i16,
-    opcode: OpcodeReq,
+    opcode: Opcode,
+}
+impl FrameHeader {
+    fn new(stream: i16, opcode: Opcode) -> Self {
+        Self {
+            version: CQL_VERSION,
+            flags: 0x00,
+            stream,
+            opcode,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Request {
+    header: FrameHeader,
     body: RequestBody,
 }
 
 #[derive(Debug)]
 pub struct Response {
-    version: u8,
-    flags: u8,
-    stream: i16,
-    opcode: OpcodeResp,
+    header: FrameHeader,
     body: ResponseBody,
 }
 
 impl CqlSerializable for Request {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
-        buf.write_u8(self.version)?;
-        buf.write_u8(self.flags)?;
-        buf.write_i16::<BigEndian>(self.stream)?;
-        buf.write_u8(self.opcode.clone() as u8)?;
+        let header = &self.header;
+        buf.write_u8(header.version)?;
+        buf.write_u8(header.flags)?;
+        buf.write_i16::<BigEndian>(header.stream)?;
+        buf.write_u8(header.opcode.clone() as u8)?;
+
         buf.write_u32::<BigEndian>((self.len() - 9) as u32)?;
 
         match self.body {
@@ -612,10 +628,7 @@ fn startup() -> Request {
         }],
     };
     return Request {
-        version: CQL_VERSION,
-        flags: 0x00,
-        stream: 0x01,
-        opcode: OpcodeReq::Startup,
+        header: FrameHeader::new(1, Opcode::Startup),
         body: RequestBody::RequestStartup(body),
     };
 }
@@ -623,10 +636,7 @@ fn startup() -> Request {
 #[allow(unused)]
 fn auth(creds: Vec<Vec<u8>>) -> Request {
     return Request {
-        version: CQL_VERSION,
-        flags: 0x00,
-        stream: 0x01,
-        opcode: OpcodeReq::Cred,
+        header: FrameHeader::new(1, Opcode::Auth),
         body: RequestBody::RequestCred(creds),
     };
 }
@@ -634,20 +644,14 @@ fn auth(creds: Vec<Vec<u8>>) -> Request {
 #[allow(unused)]
 fn options() -> Request {
     return Request {
-        version: CQL_VERSION,
-        flags: 0x00,
-        stream: 0x01,
-        opcode: OpcodeReq::Opts,
+        header: FrameHeader::new(1, Opcode::Opts),
         body: RequestBody::RequestOptions,
     };
 }
 
 fn query(stream: i16, query_str: &str, con: Consistency) -> Request {
     return Request {
-        version: CQL_VERSION,
-        flags: 0x00,
-        stream: stream,
-        opcode: OpcodeReq::Query,
+        header: FrameHeader::new(stream, Opcode::Query),
         body: RequestBody::RequestQuery(query_str.to_string(), con),
     };
 }
@@ -703,7 +707,7 @@ pub fn connect(addr: &str) -> Result<Client> {
 
         }
         */
-        _ => panic!("invalid opcode: {}", response.opcode as u8),
+        _ => panic!("invalid opcode: {}", response.header.opcode as u8),
     }
 }
 
