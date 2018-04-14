@@ -234,6 +234,10 @@ trait CqlReader: io::Read {
     fn read_cql_col_type(&mut self) -> Result<CqlColDescr> {
         let type_key = column_type(self.read_short()?);
         let ty = match type_key {
+            ColumnType::Custom => {
+                let name = self.read_cql_str()?;
+                CqlColDescr::Custom(name)
+            }
             ColumnType::List => {
                 let ty = self.read_cql_col_type()?;
                 CqlColDescr::List(Box::new(ty))
@@ -431,7 +435,6 @@ trait CqlReader: io::Read {
         eprintln!("ty: {:?}, len: {:?}", col_type, len);
 
         let col = match col_type {
-            //Custom => ,
             Ascii => CqlString(self.read_cql_str_len(len)?),
             Bigint => CqlBigint(match len {
                 8 => self.read_i64::<BigEndian>()?,
@@ -442,7 +445,9 @@ trait CqlReader: io::Read {
                 1 => self.read_u8()? != 0,
                 _len => return Err(Error::Protocol),
             }),
+            //TODO
             //Counter => ,
+            //TODO
             //Decimal => ,
             Double => Cqlf64(unsafe {
                 match len {
@@ -474,6 +479,7 @@ trait CqlReader: io::Read {
                 _len => return Err(Error::Protocol),
             }),
             VarChar => CqlString(self.read_cql_str_len(len)?),
+            //TODO
             //Varint => ,
             TimeUUID => CqlTimeUUID(match len {
                 16 => {
@@ -496,7 +502,7 @@ trait CqlReader: io::Read {
                 }
                 _len => return Err(Error::Protocol),
             }),
-            List | Map | Set | UDT | Tuple => {
+            Custom | List | Map | Set | UDT | Tuple => {
                 unreachable!("non-singular type on read_cql_col_ty: {:?}", col_type);
             }
             _ => {
@@ -514,6 +520,10 @@ trait CqlReader: io::Read {
         };
 
         match *col_type {
+            CqlColDescr::Custom(ref name) => {
+                let data = self.read_bytes(len)?;
+                Ok(Value::CqlCustom(name.clone(), data))
+            }
             CqlColDescr::Single(ty) => self.read_cql_col_ty(ty, len),
             CqlColDescr::List(ref ty) => {
                 let n = self.read_int()? as usize;
@@ -604,6 +614,7 @@ struct CqlColMetadata {
 
 #[derive(Debug)]
 enum CqlColDescr {
+    Custom(String),
     Single(ColumnType),
     List(Box<CqlColDescr>),
     Map(Box<(CqlColDescr, CqlColDescr)>),
@@ -622,6 +633,8 @@ pub struct Metadata {
 
 #[derive(Clone, Debug)]
 pub enum Value {
+    CqlCustom(String, Vec<u8>),
+
     CqlString(String),
 
     Cqli32(i32),
