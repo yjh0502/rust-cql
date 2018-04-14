@@ -412,51 +412,52 @@ trait CqlReader: io::Read {
         })
     }
 
-    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Cql> {
+    fn read_cql_col(&mut self, col_type: ColumnType) -> Result<Value> {
         use ColumnType::*;
+        use Value::*;
 
         let col = match col_type {
             //Custom => ,
-            Ascii => Cql::CqlString(self.read_cql_long_str()?),
-            Bigint => Cql::CqlBigint(match self.read_int()? {
+            Ascii => CqlString(self.read_cql_long_str()?),
+            Bigint => CqlBigint(match self.read_int()? {
                 -1 => None,
                 8 => Some(self.read_i64::<BigEndian>()?),
                 _len => return Err(Error::Protocol),
             }),
             //Blob => ,
-            Boolean => Cql::CqlBool(match self.read_int()? {
+            Boolean => CqlBool(match self.read_int()? {
                 -1 => None,
                 1 => Some(self.read_u8()? != 0),
                 _len => return Err(Error::Protocol),
             }),
             //Counter => ,
             //Decimal => ,
-            Double => Cql::Cqlf64(unsafe {
+            Double => Cqlf64(unsafe {
                 match self.read_int()? {
                     -1 => None,
                     8 => Some(transmute(self.read_u64::<BigEndian>()?)),
                     _len => return Err(Error::Protocol),
                 }
             }),
-            Float => Cql::Cqlf32(unsafe {
+            Float => Cqlf32(unsafe {
                 match self.read_int()? {
                     -1 => None,
                     4 => Some(transmute(self.read_u32::<BigEndian>()?)),
                     _len => return Err(Error::Protocol),
                 }
             }),
-            Int => Cql::Cqli32(match self.read_int()? {
+            Int => Cqli32(match self.read_int()? {
                 -1 => None,
                 4 => Some(self.read_int()?),
                 _len => return Err(Error::Protocol),
             }),
-            Text => Cql::CqlString(self.read_cql_long_str()?),
-            Timestamp => Cql::CqlTimestamp(match self.read_int()? {
+            Text => CqlString(self.read_cql_long_str()?),
+            Timestamp => CqlTimestamp(match self.read_int()? {
                 -1 => None,
                 8 => Some(self.read_i64::<BigEndian>()?),
                 _len => return Err(Error::Protocol),
             }),
-            UUID => Cql::CqlUUID(match self.read_int()? {
+            UUID => CqlUUID(match self.read_int()? {
                 -1 => None,
                 16 => {
                     let mut v = [0u8; 16];
@@ -465,9 +466,9 @@ trait CqlReader: io::Read {
                 }
                 _len => return Err(Error::Protocol),
             }),
-            VarChar => Cql::CqlString(self.read_cql_long_str()?),
+            VarChar => CqlString(self.read_cql_long_str()?),
             //Varint => ,
-            TimeUUID => Cql::CqlTimeUUID(match self.read_int()? {
+            TimeUUID => CqlTimeUUID(match self.read_int()? {
                 -1 => None,
                 16 => {
                     let mut v = [0u8; 16];
@@ -477,7 +478,7 @@ trait CqlReader: io::Read {
                 _len => return Err(Error::Protocol),
             }),
             //Inet => ,
-            List => Cql::CqlList({
+            List => CqlList({
                 match self.read_int()? {
                     -1 => None,
                     _ => {
@@ -498,7 +499,7 @@ trait CqlReader: io::Read {
                         self.read_bytes(len as usize)?;
                     }
                 }
-                Cql::CqlUnknown
+                CqlUnknown
             }
         };
         Ok(col)
@@ -569,7 +570,7 @@ pub struct Metadata {
 }
 
 #[derive(Clone, Debug)]
-pub enum Cql {
+pub enum Value {
     CqlString(Option<String>),
 
     Cqli32(Option<i32>),
@@ -588,19 +589,19 @@ pub enum Cql {
     CqlTimeUUID(Option<[u8; 16]>),
     CqlBigint(Option<i64>),
 
-    CqlList(Option<Vec<Cql>>),
+    CqlList(Option<Vec<Value>>),
 
     CqlUnknown,
 }
 
 #[derive(Debug)]
 pub struct Row {
-    cols: Vec<Cql>,
+    cols: Vec<Value>,
     metadata: Rc<Metadata>,
 }
 
 impl Row {
-    pub fn get_column(&self, col_name: &str) -> Option<Cql> {
+    pub fn get_column(&self, col_name: &str) -> Option<Value> {
         self.metadata
             .row_metadata
             .iter()
