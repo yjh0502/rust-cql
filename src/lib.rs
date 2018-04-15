@@ -259,13 +259,17 @@ trait CqlReader: io::Read {
                 let val_ty = self.read_cql_col_type()?;
                 CqlColDescr::Map(Box::new((key_ty, val_ty)))
             }
+            ColumnType::Set => {
+                let ty = self.read_cql_col_type()?;
+                CqlColDescr::Set(Box::new(ty))
+            }
             ColumnType::Tuple => {
                 let n = self.read_short()?;
                 let mut ty_list = Vec::with_capacity(usize::from(n));
                 for _ in 0..n {
                     ty_list.push(self.read_cql_col_type()?);
                 }
-                CqlColDescr::Tuple(ty_list)
+                CqlColDescr::Tuple(ty_list.into())
             }
             ty => CqlColDescr::Single(ty),
         };
@@ -578,6 +582,14 @@ trait CqlReader: io::Read {
                 }
                 Ok(Value::CqlTuple(l))
             }
+            CqlColDescr::Set(ref ty) => {
+                let n = self.read_int()? as usize;
+                let mut l = Vec::with_capacity(n);
+                for _ in 0..n {
+                    l.push(self.read_cql_col(ty)?);
+                }
+                Ok(Value::CqlSet(l))
+            }
         }
     }
 }
@@ -662,8 +674,9 @@ enum CqlColDescr {
     Single(ColumnType),
     List(Box<CqlColDescr>),
     Map(Box<(CqlColDescr, CqlColDescr)>),
+    Set(Box<CqlColDescr>),
     //UDT,
-    Tuple(Vec<CqlColDescr>),
+    Tuple(Box<[CqlColDescr]>),
 }
 
 #[derive(Debug)]
