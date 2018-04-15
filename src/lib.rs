@@ -756,7 +756,10 @@ impl CqlSerializable for Value {
                 buf.write_i64::<BigEndian>(*v)?
             }
             CqlTimeUUID(ref v) => buf.write_all(v)?,
-            CqlInet(_) => return Err(Error::Unimplemented),
+            CqlInet(ref v) => match v {
+                std::net::IpAddr::V4(v) => buf.write_all(&v.octets())?,
+                std::net::IpAddr::V6(v) => buf.write_all(&v.octets())?,
+            },
             CqlList(_) => return Err(Error::Unimplemented),
             CqlMap(_) => return Err(Error::Unimplemented),
             CqlSet(_) => return Err(Error::Unimplemented),
@@ -792,7 +795,10 @@ impl CqlSerializable for Value {
                 size_of::<i64>()
             }
             CqlTimeUUID(_) => 16,
-            CqlInet(_) => unimplemented!(),
+            CqlInet(ref v) => match *v {
+                std::net::IpAddr::V4(_) => 4,
+                std::net::IpAddr::V6(_) => 16,
+            },
             CqlList(_) => unimplemented!(),
             CqlMap(_) => unimplemented!(),
             CqlSet(_) => unimplemented!(),
