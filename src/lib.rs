@@ -358,7 +358,8 @@ trait CqlReader: io::Read {
                 Keyspace(msg)
             }
             0x0004 => {
-                let id = self.read_u8()?;
+                let len = self.read_short()?;
+                let id = self.read_bytes(usize::from(len))?;
                 let metadata = self.read_cql_metadata()?;
                 Prepared(id, metadata)
             }
@@ -876,39 +877,54 @@ impl CqlSerializable for BodyStartup {
     }
 }
 
-struct BodyQuery {
-    query: String,
+struct QueryParams {
     con: Consistency,
     params: Vec<Value>,
+}
+impl CqlSerializable for QueryParams {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u16::<BigEndian>(self.con.clone() as u16)?;
+        buf.write_u8(0x01)?;
+
+        buf.write_u16::<BigEndian>(self.params.len() as u16)?;
+        for v in &self.params {
+            v.serialize(buf)?;
+        }
+        Ok(())
+    }
+    fn len_(&self) -> usize {
+        3 + 2 + self.params.iter().map(|v| v.len_()).sum::<usize>()
+    }
+}
+
+struct BodyQuery {
+    query: String,
+    params: QueryParams,
 }
 impl CqlSerializable for BodyQuery {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         LongString(&self.query).serialize(buf)?;
-
-        buf.write_u16::<BigEndian>(self.con.clone() as u16)?;
-
-        if self.params.is_empty() {
-            buf.write_u8(0)?;
-        } else {
-            buf.write_u8(0x01)?;
-            buf.write_u16::<BigEndian>(self.params.len() as u16)?;
-
-            for v in &self.params {
-                v.serialize(buf)?;
-            }
-        }
-        Ok(())
+        self.params.serialize(buf)
     }
 
     fn len_(&self) -> usize {
-        let mut len = LongString(&self.query).len_() + 3;
-        if !self.params.is_empty() {
-            len += 2;
-        }
-        for v in &self.params {
-            len += v.len_();
-        }
-        len
+        LongString(&self.query).len_() + self.params.len_()
+    }
+}
+
+struct BodyExecute {
+    id: Vec<u8>,
+    params: QueryParams,
+}
+impl CqlSerializable for BodyExecute {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        buf.write_u16::<BigEndian>(self.id.len() as u16)?;
+        buf.write_all(&self.id)?;
+        self.params.serialize(buf)
+    }
+
+    fn len_(&self) -> usize {
+        2 + self.id.len() + self.params.len_()
     }
 }
 
@@ -952,7 +968,7 @@ pub enum ResponseResult {
     Void,
     Rows(Rows),
     Keyspace(String),
-    Prepared(u8, Metadata),
+    Prepared(Vec<u8>, Metadata),
     SchemaChange(String, String, String, Option<String>),
 }
 
@@ -1040,18 +1056,26 @@ fn query(stream: i16, query_str: &str, con: Consistency, params: Vec<Value>) -> 
         header: FrameHeader::new(stream, Opcode::Query),
         body: BodyQuery {
             query: query_str.to_owned(),
-            con,
-            params,
+            params: QueryParams { con, params },
         },
     }
 }
 
-#[allow(unused)]
 fn prepare(stream: i16, query_str: &str) -> Request<BodyPrepare> {
     Request {
         header: FrameHeader::new(stream, Opcode::Prepare),
         body: BodyPrepare {
             query: query_str.to_owned(),
+        },
+    }
+}
+
+fn execute(stream: i16, id: Vec<u8>, con: Consistency, params: Vec<Value>) -> Request<BodyExecute> {
+    Request {
+        header: FrameHeader::new(stream, Opcode::Execute),
+        body: BodyExecute {
+            id: id.clone(),
+            params: QueryParams { con, params },
         },
     }
 }
@@ -1110,6 +1134,28 @@ impl Client {
         values: Vec<Value>,
     ) -> Result<Response> {
         let msg = query(0, query_str, con, values).to_vec()?;
+        self.send(&msg)
+    }
+
+    pub fn prepare(&mut self, query_str: &str) -> Result<Vec<u8>> {
+        let msg = prepare(0, query_str).to_vec()?;
+        let resp = self.send(&msg)?;
+        match resp.body {
+            ResponseBody::Result(res) => match res {
+                ResponseResult::Prepared(id, _) => Ok(id),
+                _ => Err(Error::Protocol),
+            },
+            _ => Err(Error::Protocol),
+        }
+    }
+
+    pub fn execute(
+        &mut self,
+        id: Vec<u8>,
+        con: Consistency,
+        values: Vec<Value>,
+    ) -> Result<Response> {
+        let msg = execute(0, id, con, values).to_vec()?;
         self.send(&msg)
     }
 

@@ -23,8 +23,12 @@ fn run() -> cql::Result<()> {
     )?;
     println!("create table: {:?}", res);
 
-    let res = client.query(
-        "insert into rust.test (v1, v2, v3, v4) values ('asdf', ?, ?, ?)",
+    let prepare_id =
+        client.prepare("insert into rust.test (v1, v2, v3, v4) values ('asdf', ?, ?, ?)")?;
+    println!("prepare: {:?}", prepare_id);
+
+    let res = client.execute(
+        prepare_id,
         cql::Consistency::One,
         vec![
             cql::Value::CqlFloat(1.2345),
@@ -32,7 +36,7 @@ fn run() -> cql::Result<()> {
             cql::Value::CqlVarInt(123),
         ],
     )?;
-    println!("insert: {:?}", res);
+    println!("execute: {:?}", res);
 
     let res = client.query("select * from rust.test", cql::Consistency::One, Vec::new())?;
     println!("select: {:?}", res);
