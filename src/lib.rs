@@ -143,6 +143,7 @@ fn column_type(val: u16) -> ColumnType {
 #[derive(Debug)]
 pub enum Error {
     Protocol,
+    Unimplemented,
     UnexpectedEOF,
     Io(io::Error),
     Utf8(FromUtf8Error),
@@ -402,9 +403,7 @@ trait CqlReader: io::Read {
             }
             Opcode::Result => ResponseBody::Result(self.read_cql_result()?),
             Opcode::Supported => ResponseBody::Supported(self.read_cql_string_multimap()?),
-            _ => {
-                panic!("unknown response from server");
-            }
+            _ => return Err(Error::Protocol),
         };
         Ok(body)
     }
@@ -737,8 +736,8 @@ impl CqlSerializable for Value {
             CqlBigint(v) => buf.write_i64::<BigEndian>(*v)?,
             CqlBlob(ref v) => buf.write_all(&v)?,
             CqlBoolean(ref b) => buf.write_u8(*b as u8)?,
-            CqlCounter(_) => unimplemented!(),
-            CqlDecimal(_, _) => unimplemented!(),
+            CqlCounter(_) => return Err(Error::Unimplemented),
+            CqlDecimal(_, _) => return Err(Error::Unimplemented),
             CqlDouble(v) => {
                 let b: u64 = unsafe { transmute(*v) };
                 buf.write_u64::<BigEndian>(b)?;
@@ -752,15 +751,15 @@ impl CqlSerializable for Value {
             CqlTimestamp(v) => buf.write_i64::<BigEndian>(*v)?,
             CqlUUID(ref v) => buf.write_all(v)?,
             CqlVarChar(ref v) => buf.write_all(v.as_bytes())?,
-            CqlVarInt(_) => unimplemented!(),
+            CqlVarInt(_) => return Err(Error::Unimplemented),
             CqlTimeUUID(ref v) => buf.write_all(v)?,
-            CqlInet(_) => unimplemented!(),
-            CqlList(_) => unimplemented!(),
-            CqlMap(_) => unimplemented!(),
-            CqlSet(_) => unimplemented!(),
+            CqlInet(_) => return Err(Error::Unimplemented),
+            CqlList(_) => return Err(Error::Unimplemented),
+            CqlMap(_) => return Err(Error::Unimplemented),
+            CqlSet(_) => return Err(Error::Unimplemented),
             //UDT
-            CqlTuple(_) => unimplemented!(),
-            _ => unimplemented!(),
+            CqlTuple(_) => return Err(Error::Unimplemented),
+            CqlUnknown => return Err(Error::Unimplemented),
         };
         Ok(())
     }
@@ -1050,7 +1049,8 @@ impl Client {
                 }
             }
             */
-            _ => panic!("invalid opcode: {}", response.header.opcode as u8),
+            ResponseBody::Auth(_) => Err(Error::Unimplemented),
+            _ => Err(Error::Protocol),
         }
     }
 
