@@ -99,7 +99,7 @@ pub enum ColumnType {
     Timestamp = 0x000B,
     UUID = 0x000C,
     VarChar = 0x000D,
-    Varint = 0x000E,
+    VarInt = 0x000E,
     TimeUUID = 0x000F,
     Inet = 0x0010,
     List = 0x0020,
@@ -128,7 +128,7 @@ fn column_type(val: u16) -> ColumnType {
         0x000B => Timestamp,
         0x000C => UUID,
         0x000D => VarChar,
-        0x000E => Varint,
+        0x000E => VarInt,
         0x000F => TimeUUID,
         0x0010 => Inet,
         0x0020 => List,
@@ -456,13 +456,13 @@ trait CqlReader: io::Read {
         trace!("ty: {:?}, len: {:?}", col_type, len);
 
         let col = match col_type {
-            Ascii => CqlString(self.read_cql_str_len(len)?),
+            Ascii => CqlAscii(self.read_cql_str_len(len)?),
             Bigint => CqlBigint(match len {
                 8 => self.read_i64::<BigEndian>()?,
                 _len => return Err(Error::Protocol),
             }),
             Blob => CqlBlob(self.read_bytes(len)?),
-            Boolean => CqlBool(match len {
+            Boolean => CqlBoolean(match len {
                 1 => self.read_u8()? != 0,
                 _len => return Err(Error::Protocol),
             }),
@@ -473,45 +473,45 @@ trait CqlReader: io::Read {
                 let unscaled = self.read_cql_varint(len)?;
                 CqlDecimal(scale, unscaled)
             }
-            Double => Cqlf64(unsafe {
+            Double => unsafe {
                 match len {
-                    8 => transmute(self.read_u64::<BigEndian>()?),
+                    8 => CqlDouble(transmute(self.read_u64::<BigEndian>()?)),
                     _len => return Err(Error::Protocol),
                 }
-            }),
-            Float => Cqlf32(unsafe {
+            },
+            Float => unsafe {
                 match len {
-                    4 => transmute(self.read_u32::<BigEndian>()?),
+                    4 => CqlFloat(transmute(self.read_u32::<BigEndian>()?)),
                     _len => return Err(Error::Protocol),
                 }
-            }),
-            Int => Cqli32(match len {
-                4 => self.read_int()?,
+            },
+            Int => match len {
+                4 => CqlInt(self.read_int()?),
                 _len => return Err(Error::Protocol),
-            }),
-            Text => CqlString(self.read_cql_str_len(len)?),
-            Timestamp => CqlTimestamp(match len {
-                8 => self.read_i64::<BigEndian>()?,
+            },
+            Text => CqlText(self.read_cql_str_len(len)?),
+            Timestamp => match len {
+                8 => CqlTimestamp(self.read_i64::<BigEndian>()?),
                 _len => return Err(Error::Protocol),
-            }),
-            UUID => CqlUUID(match len {
+            },
+            UUID => match len {
                 16 => {
                     let mut v = [0u8; 16];
                     self.read_full(&mut v)?;
-                    v
+                    CqlUUID(v)
                 }
                 _len => return Err(Error::Protocol),
-            }),
-            VarChar => CqlString(self.read_cql_str_len(len)?),
-            Varint => Cqli64(self.read_cql_varint(len)?),
-            TimeUUID => CqlTimeUUID(match len {
+            },
+            VarChar => CqlVarChar(self.read_cql_str_len(len)?),
+            VarInt => CqlVarInt(self.read_cql_varint(len)?),
+            TimeUUID => match len {
                 16 => {
                     let mut v = [0u8; 16];
                     self.read_full(&mut v)?;
-                    v
+                    CqlTimeUUID(v)
                 }
                 _len => return Err(Error::Protocol),
-            }),
+            },
             Inet => CqlInet(match len {
                 4 => {
                     let mut v = [0u8; 4];
@@ -677,54 +677,32 @@ pub struct Metadata {
 
 #[derive(Clone, Debug)]
 pub enum Value {
+    CqlNull,
+
     CqlCustom(String, Vec<u8>),
-
-    CqlString(String),
-
-    Cqli32(i32),
-    Cqli64(i64),
-
+    CqlAscii(String),
+    CqlBigint(i64),
     CqlBlob(Vec<u8>),
-    CqlBool(bool),
-
+    CqlBoolean(bool),
     CqlCounter(u64),
     CqlDecimal(i32, i64),
-
-    Cqlf32(f32),
-    Cqlf64(f64),
-
+    CqlDouble(f64),
+    CqlFloat(f32),
+    CqlInt(i32),
+    CqlText(String),
     CqlTimestamp(i64),
     CqlUUID([u8; 16]),
+    CqlVarChar(String),
+    CqlVarInt(i64),
     CqlTimeUUID([u8; 16]),
     CqlInet(std::net::IpAddr),
-    CqlBigint(i64),
-
     CqlList(Vec<Value>),
     CqlMap(Vec<(Value, Value)>),
+    CqlSet(Vec<Value>),
+    //UDT
     CqlTuple(Vec<Vec<Value>>),
-
-    CqlNull,
     CqlUnknown,
 }
-
-/*
-impl CqlSerializable for Value {
-    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
-        use Value::*;
-        match self {
-            CqlString(ref s) => {
-            }
-            _ => unimplemented!(),
-        }
-    }
-    fn len(&self) -> usize {
-        use Value::*;
-        match self {
-            _ => unimplemented!(),
-        }
-    }
-}
-*/
 
 #[derive(Debug)]
 pub struct Row {
