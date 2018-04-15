@@ -1021,13 +1021,9 @@ pub struct Client {
 impl Client {
     pub fn new(addr: &str) -> Result<Client> {
         let mut socket = TcpStream::connect(addr)?;
-        let msg_startup = startup();
+        let msg_startup = startup().to_vec()?;
 
-        let mut buf = Vec::new();
-        msg_startup.serialize::<Vec<u8>>(&mut buf)?;
-        eprintln!("msg: {:?}, {}", buf, buf.len());
-        socket.write_all(buf.as_slice())?;
-
+        socket.write_all(&msg_startup)?;
         let response = socket.read_cql_response()?;
         match response.body {
             ResponseBody::Ready => Ok(Client { socket: socket }),
@@ -1059,11 +1055,8 @@ impl Client {
     }
 
     pub fn options(&mut self) -> Result<Response> {
-        let q = options();
-        let msg = q.to_vec()?;
-
-        self.socket.write_all(&msg)?;
-        self.socket.read_cql_response()
+        let msg = options().to_vec()?;
+        self.send(&msg)
     }
 
     //TODO: signature
@@ -1073,13 +1066,12 @@ impl Client {
         con: Consistency,
         values: Vec<Value>,
     ) -> Result<Response> {
-        let q = query(0, query_str, con, values);
+        let msg = query(0, query_str, con, values).to_vec()?;
+        self.send(&msg)
+    }
 
-        let mut writer = Vec::new();
-        q.serialize::<Vec<u8>>(&mut writer)?;
-        eprintln!("> {:?}, {:?}", writer, writer.len());
-
-        self.socket.write_all(writer.as_slice())?;
+    fn send(&mut self, data: &[u8]) -> Result<Response> {
+        self.socket.write_all(data)?;
         self.socket.read_cql_response()
     }
 }
