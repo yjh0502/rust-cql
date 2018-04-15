@@ -604,7 +604,7 @@ impl<'a> CqlSerializable for ShortString<'a> {
         Ok(())
     }
     fn len_(&self) -> usize {
-        self.0.len() + 4
+        self.0.len() + 2
     }
 }
 
