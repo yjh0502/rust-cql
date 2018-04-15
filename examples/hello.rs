@@ -24,9 +24,13 @@ fn run() -> cql::Result<()> {
     println!("create table: {:?}", res);
 
     let res = client.query(
-        "insert into rust.test (v1, v2, v3, v4) values ('asdf', ?, [true], ?)",
+        "insert into rust.test (v1, v2, v3, v4) values ('asdf', ?, ?, ?)",
         cql::Consistency::One,
-        vec![cql::Value::CqlFloat(1.2345), cql::Value::CqlVarInt(123)],
+        vec![
+            cql::Value::CqlFloat(1.2345),
+            cql::Value::CqlList(vec![cql::Value::CqlBoolean(false)]),
+            cql::Value::CqlVarInt(123),
+        ],
     )?;
     println!("insert: {:?}", res);
 

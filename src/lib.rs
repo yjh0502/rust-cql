@@ -710,7 +710,7 @@ pub enum Value {
     CqlList(Vec<Value>),
     CqlMap(Vec<(Value, Value)>),
     CqlSet(Vec<Value>),
-    //UDT
+    CqlUDT,
     CqlTuple(Vec<Vec<Value>>),
     CqlUnknown,
 }
@@ -760,11 +760,34 @@ impl CqlSerializable for Value {
                 std::net::IpAddr::V4(v) => buf.write_all(&v.octets())?,
                 std::net::IpAddr::V6(v) => buf.write_all(&v.octets())?,
             },
-            CqlList(_) => return Err(Error::Unimplemented),
-            CqlMap(_) => return Err(Error::Unimplemented),
-            CqlSet(_) => return Err(Error::Unimplemented),
-            //UDT
-            CqlTuple(_) => return Err(Error::Unimplemented),
+            CqlList(v) => {
+                buf.write_u32::<BigEndian>(v.len() as u32)?;
+                for item in v {
+                    item.serialize(buf)?;
+                }
+            }
+            CqlMap(v) => {
+                buf.write_u32::<BigEndian>(v.len() as u32)?;
+                for (ref k, ref v) in v {
+                    k.serialize(buf)?;
+                    v.serialize(buf)?;
+                }
+            }
+            CqlSet(v) => {
+                buf.write_u32::<BigEndian>(v.len() as u32)?;
+                for item in v {
+                    item.serialize(buf)?;
+                }
+            }
+            CqlUDT => return Err(Error::Unimplemented),
+            CqlTuple(v) => {
+                buf.write_u32::<BigEndian>(v.len() as u32)?;
+                for tup in v {
+                    for item in tup {
+                        item.serialize(buf)?;
+                    }
+                }
+            }
             CqlUnknown => return Err(Error::Unimplemented),
         };
         Ok(())
@@ -799,11 +822,19 @@ impl CqlSerializable for Value {
                 std::net::IpAddr::V4(_) => 4,
                 std::net::IpAddr::V6(_) => 16,
             },
-            CqlList(_) => unimplemented!(),
-            CqlMap(_) => unimplemented!(),
-            CqlSet(_) => unimplemented!(),
-            //UDT
-            CqlTuple(_) => unimplemented!(),
+            CqlList(v) => 4 + v.iter().map(|item| item.len_()).sum::<usize>(),
+            CqlMap(v) => {
+                4 + v.iter()
+                    .map(|tup| tup.0.len_() + tup.1.len_())
+                    .sum::<usize>()
+            }
+            CqlSet(v) => 4 + v.iter().map(|item| item.len_()).sum::<usize>(),
+            CqlUDT => unimplemented!(),
+            CqlTuple(v) => {
+                4 + v.iter()
+                    .map(|t| -> usize { t.iter().map(|c| c.len_()).sum::<usize>() })
+                    .sum::<usize>()
+            }
             CqlUnknown => unimplemented!(),
         };
         4 + body_len
