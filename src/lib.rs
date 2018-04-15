@@ -717,6 +717,89 @@ pub enum Value {
     CqlUnknown,
 }
 
+impl CqlSerializable for Value {
+    fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
+        use Value::*;
+
+        match self {
+            CqlNull => {
+                buf.write_i32::<BigEndian>(-1)?;
+                return Ok(());
+            }
+            _ => (),
+        }
+
+        let len = self.len_() - 4;
+        buf.write_u32::<BigEndian>(len as u32)?;
+        match self {
+            CqlNull => unreachable!(),
+            CqlCustom(ref _name, ref v) => buf.write_all(&v)?,
+            CqlAscii(ref v) => buf.write_all(v.as_bytes())?,
+            CqlBigint(v) => buf.write_i64::<BigEndian>(*v)?,
+            CqlBlob(ref v) => buf.write_all(&v)?,
+            CqlBoolean(ref b) => buf.write_u8(*b as u8)?,
+            CqlCounter(_) => unimplemented!(),
+            CqlDecimal(_, _) => unimplemented!(),
+            CqlDouble(v) => {
+                let b: [u8; 8] = unsafe { transmute(*v) };
+                buf.write_all(&b)?;
+            }
+            CqlFloat(v) => {
+                let b: [u8; 4] = unsafe { transmute(*v) };
+                buf.write_all(&b)?;
+            }
+            CqlInt(v) => buf.write_i32::<BigEndian>(*v)?,
+            CqlText(ref v) => buf.write_all(v.as_bytes())?,
+            CqlTimestamp(v) => buf.write_i64::<BigEndian>(*v)?,
+            CqlUUID(ref v) => buf.write_all(v)?,
+            CqlVarChar(ref v) => buf.write_all(v.as_bytes())?,
+            CqlVarInt(_) => unimplemented!(),
+            CqlTimeUUID(ref v) => buf.write_all(v)?,
+            CqlInet(_) => unimplemented!(),
+            CqlList(_) => unimplemented!(),
+            CqlMap(_) => unimplemented!(),
+            CqlSet(_) => unimplemented!(),
+            //UDT
+            CqlTuple(_) => unimplemented!(),
+            _ => unimplemented!(),
+        };
+        Ok(())
+    }
+
+    fn len_(&self) -> usize {
+        use std::mem::size_of;
+        use Value::*;
+
+        let body_len = match self {
+            CqlNull => 0,
+            CqlCustom(ref _name, ref v) => v.len(),
+            CqlAscii(ref v) => v.len(),
+            CqlBigint(_) => size_of::<i64>(),
+            CqlBlob(ref v) => v.len(),
+            CqlBoolean(_) => size_of::<u8>(),
+            CqlCounter(_) => size_of::<u64>(),
+            CqlDecimal(_, _) => unimplemented!(),
+            CqlDouble(_) => size_of::<f64>(),
+            CqlFloat(_) => size_of::<f32>(),
+            CqlInt(_) => size_of::<i32>(),
+            CqlText(ref v) => v.len(),
+            CqlTimestamp(_) => size_of::<i64>(),
+            CqlUUID(_) => 16,
+            CqlVarChar(ref v) => v.len(),
+            CqlVarInt(_) => unimplemented!(),
+            CqlTimeUUID(_) => 16,
+            CqlInet(_) => unimplemented!(),
+            CqlList(_) => unimplemented!(),
+            CqlMap(_) => unimplemented!(),
+            CqlSet(_) => unimplemented!(),
+            //UDT
+            CqlTuple(_) => unimplemented!(),
+            CqlUnknown => unimplemented!(),
+        };
+        4 + body_len
+    }
+}
+
 #[derive(Debug)]
 pub struct Row {
     cols: Vec<Value>,
