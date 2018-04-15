@@ -17,16 +17,16 @@ fn run() -> cql::Result<()> {
     println!("create: {:?}", res);
 
     let res = client.query(
-        "create table rust.test (v1 text primary key, v2 float, v3 list<boolean>)",
+        "create table rust.test (v1 text primary key, v2 float, v3 list<boolean>, v4 varint)",
         cql::Consistency::One,
         Vec::new(),
     )?;
     println!("create table: {:?}", res);
 
     let res = client.query(
-        "insert into rust.test (v1, v2, v3) values ('asdf', ?, [true])",
+        "insert into rust.test (v1, v2, v3, v4) values ('asdf', ?, [true], ?)",
         cql::Consistency::One,
-        vec![cql::Value::CqlFloat(1.2345)],
+        vec![cql::Value::CqlFloat(1.2345), cql::Value::CqlVarInt(123)],
     )?;
     println!("insert: {:?}", res);
 

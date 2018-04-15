@@ -469,7 +469,7 @@ trait CqlReader: io::Read {
                 _len => return Err(Error::Protocol),
             }),
             //TODO
-            //Counter => ,
+            Counter => return Err(Error::Unimplemented),
             Decimal => {
                 let scale = self.read_int()?;
                 let unscaled = self.read_cql_varint(len)?;
@@ -751,7 +751,10 @@ impl CqlSerializable for Value {
             CqlTimestamp(v) => buf.write_i64::<BigEndian>(*v)?,
             CqlUUID(ref v) => buf.write_all(v)?,
             CqlVarChar(ref v) => buf.write_all(v.as_bytes())?,
-            CqlVarInt(_) => return Err(Error::Unimplemented),
+            CqlVarInt(v) => {
+                //TODO: compress varint
+                buf.write_i64::<BigEndian>(*v)?
+            }
             CqlTimeUUID(ref v) => buf.write_all(v)?,
             CqlInet(_) => return Err(Error::Unimplemented),
             CqlList(_) => return Err(Error::Unimplemented),
@@ -784,7 +787,10 @@ impl CqlSerializable for Value {
             CqlTimestamp(_) => size_of::<i64>(),
             CqlUUID(_) => 16,
             CqlVarChar(ref v) => v.len(),
-            CqlVarInt(_) => unimplemented!(),
+            CqlVarInt(_) => {
+                //TODO: compress varint
+                size_of::<i64>()
+            }
             CqlTimeUUID(_) => 16,
             CqlInet(_) => unimplemented!(),
             CqlList(_) => unimplemented!(),
