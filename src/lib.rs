@@ -426,8 +426,7 @@ trait CqlReader: io::Read {
 
         let body = reader.read_cql_body(opcode)?;
         eprintln!("body: {:?}", body);
-
-        println!("{:?} {:?}", header_data, body_data);
+        // println!("byte: {:?} {:?}", header_data, body_data);
 
         if reader.position() != length as u64 {
             eprintln!("short: {} != {}", reader.position(), length);
@@ -741,12 +740,12 @@ impl CqlSerializable for Value {
             CqlCounter(_) => unimplemented!(),
             CqlDecimal(_, _) => unimplemented!(),
             CqlDouble(v) => {
-                let b: [u8; 8] = unsafe { transmute(*v) };
-                buf.write_all(&b)?;
+                let b: u64 = unsafe { transmute(*v) };
+                buf.write_u64::<BigEndian>(b)?;
             }
             CqlFloat(v) => {
-                let b: [u8; 4] = unsafe { transmute(*v) };
-                buf.write_all(&b)?;
+                let b: u32 = unsafe { transmute(*v) };
+                buf.write_u32::<BigEndian>(b)?;
             }
             CqlInt(v) => buf.write_i32::<BigEndian>(*v)?,
             CqlText(ref v) => buf.write_all(v.as_bytes())?,
@@ -838,18 +837,36 @@ impl CqlSerializable for BodyStartup {
 struct BodyQuery {
     query: String,
     con: Consistency,
+    params: Vec<Value>,
 }
 impl CqlSerializable for BodyQuery {
     fn serialize<T: io::Write>(&self, buf: &mut T) -> Result<()> {
         LongString(&self.query).serialize(buf)?;
 
         buf.write_u16::<BigEndian>(self.con.clone() as u16)?;
-        buf.write_u8(0)?;
+
+        if self.params.is_empty() {
+            buf.write_u8(0)?;
+        } else {
+            buf.write_u8(0x01)?;
+            buf.write_u16::<BigEndian>(self.params.len() as u16)?;
+
+            for v in &self.params {
+                v.serialize(buf)?;
+            }
+        }
         Ok(())
     }
 
     fn len_(&self) -> usize {
-        LongString(&self.query).len_() + 3
+        let mut len = LongString(&self.query).len_() + 3;
+        if !self.params.is_empty() {
+            len += 2;
+        }
+        for v in &self.params {
+            len += v.len_();
+        }
+        len
     }
 }
 
@@ -976,12 +993,13 @@ fn options() -> Request<BodyEmpty> {
     }
 }
 
-fn query(stream: i16, query_str: &str, con: Consistency) -> Request<BodyQuery> {
+fn query(stream: i16, query_str: &str, con: Consistency, params: Vec<Value>) -> Request<BodyQuery> {
     Request {
         header: FrameHeader::new(stream, Opcode::Query),
         body: BodyQuery {
             query: query_str.to_owned(),
             con,
+            params,
         },
     }
 }
@@ -1007,6 +1025,7 @@ impl Client {
 
         let mut buf = Vec::new();
         msg_startup.serialize::<Vec<u8>>(&mut buf)?;
+        eprintln!("msg: {:?}, {}", buf, buf.len());
         socket.write_all(buf.as_slice())?;
 
         let response = socket.read_cql_response()?;
@@ -1048,11 +1067,17 @@ impl Client {
     }
 
     //TODO: signature
-    pub fn query(&mut self, query_str: &str, con: Consistency) -> Result<Response> {
-        let q = query(0, query_str, con);
+    pub fn query(
+        &mut self,
+        query_str: &str,
+        con: Consistency,
+        values: Vec<Value>,
+    ) -> Result<Response> {
+        let q = query(0, query_str, con, values);
 
         let mut writer = Vec::new();
         q.serialize::<Vec<u8>>(&mut writer)?;
+        eprintln!("> {:?}, {:?}", writer, writer.len());
 
         self.socket.write_all(writer.as_slice())?;
         self.socket.read_cql_response()
